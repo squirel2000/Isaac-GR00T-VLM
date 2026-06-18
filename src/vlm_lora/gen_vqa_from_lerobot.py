@@ -3,6 +3,9 @@
 teacher-VLM mode (default) captions frames with a larger VLM to cover all 7 PDF question
 types; template mode adds reliable Summary/Trajectory/Attribute/Temporal pairs. Outputs
 <out>/{data,data.train,data.val}.jsonl, <out>/images/*.png, <out>/stats.json.
+
+The teacher is loaded ONCE (TeacherVLM) and reused across frames; rows are streamed to
+data.jsonl as they are produced so a long/interrupted run keeps its progress.
 """
 
 import json
@@ -84,38 +87,63 @@ def _extract_frame(video_path: str, frame_index: int):
     return Image.fromarray(np.asarray(bgr)[:, :, ::-1]) if ok else None
 
 
-def _teacher_qa(image, task: str, teacher_model: str) -> list[dict]:
-    from transformers import AutoModelForImageTextToText, AutoProcessor
+_TEACHER_PROMPT = (
+    "This is a robot manipulation scene. Task: '{task}'. Generate 4 diverse question/answer "
+    "pairs about this image covering varied types among: {types}. Keep answers short and "
+    "grounded in what is visible. Reply ONLY as a JSON list of objects with keys "
+    "type, question, answer."
+)
 
-    proc = AutoProcessor.from_pretrained(teacher_model, trust_remote_code=True)
-    model = AutoModelForImageTextToText.from_pretrained(
-        teacher_model, trust_remote_code=True, device_map="auto"
-    )
-    prompt = (
-        f"This is a robot manipulation scene. Task: '{task}'. Generate 4 diverse "
-        f"question/answer pairs covering these types: {', '.join(_TYPES)}. "
-        "Reply ONLY as a JSON list of objects {type, question, answer}."
-    )
-    msgs = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": prompt}]}]
-    text = proc.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
-    inputs = proc(text=[text], images=[image], return_tensors="pt").to(model.device)
-    out = model.generate(**inputs, max_new_tokens=512)
-    dec = proc.batch_decode(out[:, inputs["input_ids"].shape[1] :], skip_special_tokens=True)[0]
-    try:
-        s, e = dec.index("["), dec.rindex("]") + 1
-        return [qa for qa in json.loads(dec[s:e]) if {"type", "question", "answer"} <= set(qa)]
-    except Exception:
-        return []
+
+class TeacherVLM:
+    """A larger VLM loaded once and reused to caption frames into VQA pairs.
+
+    Works for dense (Qwen3-VL-*-Instruct) and MoE (Qwen3-VL-30B-A3B-Instruct) checkpoints —
+    AutoModelForImageTextToText maps the config to the right class (dense vs ...Moe...).
+    """
+
+    def __init__(self, model_id: str, dtype: str = "bfloat16"):
+        import torch
+        from transformers import AutoModelForImageTextToText, AutoProcessor
+
+        from vlm_lora.hf_utils import resolve_model_path
+
+        mid = resolve_model_path(model_id)
+        self.processor = AutoProcessor.from_pretrained(mid, trust_remote_code=True)
+        td = {"bfloat16": torch.bfloat16, "float16": torch.float16, "auto": "auto"}.get(dtype, dtype)
+        self.model = AutoModelForImageTextToText.from_pretrained(
+            mid, trust_remote_code=True, device_map="auto", dtype=td
+        ).eval()
+
+    def generate_qa(self, image, task: str, max_new_tokens: int = 512) -> list[dict]:
+        import torch
+
+        prompt = _TEACHER_PROMPT.format(task=task, types=", ".join(_TYPES))
+        msgs = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": prompt}]}]
+        text = self.processor.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+        inputs = self.processor(text=[text], images=[image], return_tensors="pt").to(self.model.device)
+        with torch.no_grad():
+            out = self.model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+        dec = self.processor.batch_decode(
+            out[:, inputs["input_ids"].shape[1] :], skip_special_tokens=True
+        )[0]
+        try:
+            s, e = dec.index("["), dec.rindex("]") + 1
+            return [qa for qa in json.loads(dec[s:e]) if {"type", "question", "answer"} <= set(qa)]
+        except Exception:
+            return []
 
 
 def generate(
     dataset_path: str,
     out_dir: str,
-    num_episodes: int = 200,
+    num_episodes: int = 100,
     frames_per_episode: int = 3,
     val_ratio: float = 0.1,
-    teacher_model: str | None = "Qwen/Qwen2.5-VL-7B-Instruct",
+    teacher_model: str | None = "Qwen/Qwen3-VL-30B-A3B-Instruct",
+    teacher_dtype: str = "bfloat16",
     use_template: bool = True,
+    max_new_tokens: int = 512,
     seed: int = 42,
 ) -> None:
     import random
@@ -132,45 +160,58 @@ def generate(
     vpat = os.path.join(
         dataset_path, "videos/chunk-000/observation.images.camera/episode_{:06d}.mp4"
     )
-    rows: list[dict] = []
-    for ep in eps:
-        ei, task, length = ep["episode_index"], ep["task"], ep["length"]
-        if not os.path.exists(vpat.format(ei)):
-            continue
-        for fidx, phase in _sample_frames(length, frames_per_episode):
-            img = _extract_frame(vpat.format(ei), fidx)
-            if img is None:
+
+    teacher = TeacherVLM(teacher_model, teacher_dtype) if teacher_model else None
+    if teacher:
+        print(f"[gen_vqa] teacher loaded: {teacher_model}", flush=True)
+
+    data_path = os.path.join(out_dir, "data.jsonl")
+    n = 0
+    with open(data_path, "w", encoding="utf-8") as out:
+        for i, ep in enumerate(eps):
+            ei, task, length = ep["episode_index"], ep["task"], ep["length"]
+            if not os.path.exists(vpat.format(ei)):
                 continue
-            rel = f"images/ep{ei:06d}_f{fidx:06d}.png"
-            img.save(os.path.join(out_dir, rel))
-            qas = template_qa_pairs(task, phase) if use_template else []
-            if teacher_model:
-                qas += _teacher_qa(img, task, teacher_model)
-            for qa in qas:
-                rows.append(
-                    {
-                        "images": [rel],
-                        "type": qa["type"],
-                        "messages": [
-                            {"role": "user", "content": f"<image>\n{qa['question']}"},
-                            {"role": "assistant", "content": qa["answer"]},
-                        ],
-                    }
-                )
+            for fidx, phase in _sample_frames(length, frames_per_episode):
+                img = _extract_frame(vpat.format(ei), fidx)
+                if img is None:
+                    continue
+                rel = f"images/ep{ei:06d}_f{fidx:06d}.png"
+                img.save(os.path.join(out_dir, rel))
+                qas = template_qa_pairs(task, phase) if use_template else []
+                if teacher:
+                    qas += teacher.generate_qa(img, task, max_new_tokens)
+                for qa in qas:
+                    out.write(
+                        json.dumps(
+                            {
+                                "images": [rel],
+                                "type": qa["type"],
+                                "messages": [
+                                    {"role": "user", "content": f"<image>\n{qa['question']}"},
+                                    {"role": "assistant", "content": qa["answer"]},
+                                ],
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+                    out.flush()
+                    n += 1
+            if (i + 1) % 10 == 0:
+                print(f"[gen_vqa] {i + 1}/{len(eps)} episodes, {n} QA pairs so far", flush=True)
+
+    rows = [json.loads(x) for x in open(data_path, encoding="utf-8") if x.strip()]
     random.shuffle(rows)
     n_val = max(1, int(len(rows) * val_ratio))
-    for name, sub in {
-        "data.val.jsonl": rows[:n_val],
-        "data.train.jsonl": rows[n_val:],
-        "data.jsonl": rows,
-    }.items():
+    for name, sub in {"data.val.jsonl": rows[:n_val], "data.train.jsonl": rows[n_val:]}.items():
         with open(os.path.join(out_dir, name), "w", encoding="utf-8") as f:
             for r in sub:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
     json.dump(compute_stats(rows), open(os.path.join(out_dir, "stats.json"), "w"), indent=2)
     print(
-        f"[gen_vqa] {len(rows)} pairs ({len(rows) - n_val} train/{n_val} val) -> {out_dir}; "
-        "stats.json written"
+        f"[gen_vqa] DONE {len(rows)} pairs ({len(rows) - n_val} train/{n_val} val) -> {out_dir}",
+        flush=True,
     )
 
 
