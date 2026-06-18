@@ -136,8 +136,19 @@
 
 <h2>6 · 評估結果（對齊 PDF 兩張表）</h2>
 <div class="card">
-<h3>6a · VLM VQA 準確率（按題型）：base vs LoRA</h3>
-<div id="vqaacc" class="pending">⏳ 待 postall 評估完成後注入（讀 vqa_acc_base.json / vqa_acc_lora.json）。</div>
+<h3>6a · VLM VQA 準確率（按題型）：base vs LoRA（249 題 val）</h3>
+<table>
+<tr><th>題型</th><th>base Cosmos-R2</th><th>LoRA（產物 A）</th><th>Δ</th></tr>
+<tr><td>Attribute</td><td>64.1% (41/64)</td><td>96.9% (62/64)</td><td style="color:var(--acc2)">+32.8%</td></tr>
+<tr><td>Mechanics</td><td>29.0% (9/31)</td><td>100% (31/31)</td><td style="color:var(--acc2)">+71.0%</td></tr>
+<tr><td>Reasoning</td><td>0% (0/29)</td><td>79.3% (23/29)</td><td style="color:var(--acc2)">+79.3%</td></tr>
+<tr><td>Spatial</td><td>74.1% (20/27)</td><td>92.6% (25/27)</td><td style="color:var(--acc2)">+18.5%</td></tr>
+<tr><td>Summary</td><td>0% (0/32)</td><td>93.8% (30/32)</td><td style="color:var(--acc2)">+93.8%</td></tr>
+<tr><td>Temporal</td><td>3.3% (1/30)</td><td>96.7% (29/30)</td><td style="color:var(--acc2)">+93.4%</td></tr>
+<tr><td>Trajectory</td><td>47.2% (17/36)</td><td>88.9% (32/36)</td><td style="color:var(--acc2)">+41.7%</td></tr>
+<tr style="font-weight:700"><td>Overall</td><td>35.3% (88/249)</td><td style="color:var(--acc2)">93.2% (232/249)</td><td style="color:var(--acc2)">+57.8%</td></tr>
+</table>
+<p class="mut">對齊 PDF 的 VLM 表：LoRA 微調後 VLM 對此領域的理解大幅提升（base 在 Summary/Reasoning 因 template 特定措辭未命中而 0%，LoRA 學會後幾乎全中）。<b>注意</b>：val 與 train 同分佈（in-distribution），數字偏高；真實泛化需獨立場景測試集（見 §8 多樣性侷限）。</p>
 </div>
 <div class="card">
 <h3>6b · VLA open-loop action MSE / MAE：baseline vs swapped</h3>

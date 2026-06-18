@@ -46,17 +46,25 @@ def swap(vla_ckpt: str, merged_vlm: str, out_dir: str) -> None:
     print(f"[swap] stats: {st}")
     assert st["copied"] > 0, "no backbone weights copied — check prefixes/shapes"
     out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    for f in Path(vla_ckpt).iterdir():
-        if f.is_file() and f.suffix != ".safetensors":
-            shutil.copy2(f, out / f.name)
+    if out.exists():
+        shutil.rmtree(out)
+
+    def _ignore(_d, names):
+        # Skip weight shards, the index, and nested HF checkpoints; copy everything else
+        # (config.json, processor/, experiment_cfg/, *_args.bin ...) so AutoProcessor works.
+        return [
+            n
+            for n in names
+            if n.endswith(".safetensors")
+            or n == "model.safetensors.index.json"
+            or n.startswith("checkpoint-")
+        ]
+
+    shutil.copytree(vla_ckpt, out_dir, ignore=_ignore)
     from safetensors.torch import save_file
 
     save_file(new_sd, str(out / "model.safetensors"), metadata={"format": "pt"})
-    idx = out / "model.safetensors.index.json"
-    if idx.exists():
-        idx.unlink()
-    print(f"[swap] swapped VLA written to {out_dir}")
+    print(f"[swap] swapped VLA written to {out_dir} (copied {st['copied']} backbone tensors)")
 
 
 if __name__ == "__main__":
