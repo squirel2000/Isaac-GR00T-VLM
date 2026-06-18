@@ -1,0 +1,47 @@
+# Default paths + hyperparameters for the VLM LoRA flow. CLI flags override these.
+# H100 paths (Pegasus). Local invocations use plain `python scripts/common/pegasus.py`.
+
+models:
+  base_vlm: nvidia/Cosmos-Reason2-2B            # gated -> export HF_TOKEN
+  teacher_vlm: Qwen/Qwen2.5-VL-7B-Instruct      # VQA auto-generation teacher (swappable)
+
+remote:
+  repo: /data/VLA/tingying/vlm_lora_finetune
+  n1d7_repo: /data/VLA/tingying/IsaacLab-GR00T/Isaac-GR00T_n1d7
+  output_root: /data/VLA/tingying/IsaacLab-GR00T/artifacts/checkpoints/gr00t
+
+data:
+  lerobot_dataset: /data/VLA/datasets/OpenArm_CanSorting_MultiTask_dataset_O6_0403
+  vqa_out: artifacts/vqa
+  num_episodes: 200
+  frames_per_episode: 3
+  val_ratio: 0.1
+
+vla:
+  baseline_ckpt: /data/VLA/tingying/IsaacLab-GR00T/artifacts/checkpoints/gr00t/N1_7_fft_0614_150k_lr1e4_no_tune_visual
+  # alt: N1_7_fft_0614_150k_lr5e5_no_tune_visual
+  swapped_out: /data/VLA/tingying/IsaacLab-GR00T/artifacts/checkpoints/gr00t/N1_7_cosmosR2lora_swapped
+
+artifacts:
+  base_snapshot: artifacts/Cosmos-Reason2-2B-base
+  adapter: artifacts/cosmos_r2_lora
+  merged_vlm: artifacts/Cosmos-Reason2-2B-lora-merged
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target: llm            # 'llm' | 'all-linear' | 'q_proj,v_proj,...'
+  on_vision: false
+
+train:
+  max_steps: 2000
+  learning_rate: 1e-4
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 8
+  warmup_ratio: 0.05
+  max_seq_len: 2048
+  save_steps: 500
+  optim: adamw_torch
+  gradient_checkpointing: true
+  bf16: true

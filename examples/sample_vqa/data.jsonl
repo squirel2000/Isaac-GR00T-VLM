@@ -1,0 +1,2 @@
+{"images": ["orange.png"], "type": "Attribute", "messages": [{"role": "user", "content": "<image>\nWhat color is the plate?"}, {"role": "assistant", "content": "Orange."}]}
+{"images": ["green.png"], "type": "Attribute", "messages": [{"role": "user", "content": "<image>\nWhat color is the plate?"}, {"role": "assistant", "content": "Green."}]}
