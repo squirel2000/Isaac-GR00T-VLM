@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM 與 VLM 微調指南（含 LoRA / MoE / 多模態）</title>
+<style>
+  :root{--bg:#0f1419;--panel:#171e26;--panel2:#1f2832;--ink:#e6edf3;--mut:#9fb0c0;
+        --acc:#4cc2ff;--acc2:#7ee787;--acc3:#ffa657;--acc4:#d2a8ff;--line:#2b3947;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 -apple-system,"Segoe UI","Microsoft JhengHei",system-ui,sans-serif}
+  .wrap{max-width:1040px;margin:0 auto;padding:32px 22px 80px}
+  h1{font-size:26px}h2{font-size:20px;margin:1.8em 0 .5em;border-left:4px solid var(--acc);padding-left:10px}
+  h3{font-size:16px;color:var(--acc2);margin:1.2em 0 .4em}
+  .mut{color:var(--mut)}code{background:#0b0f14;color:var(--acc3);padding:1px 6px;border-radius:5px;font-size:13px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0}
+  .grid{display:grid;gap:14px}.g2{grid-template-columns:1fr 1fr}@media(max-width:760px){.g2{grid-template-columns:1fr}}
+  table{border-collapse:collapse;width:100%;font-size:14px}th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--acc)}
+  .note{border-left:3px solid var(--acc3);background:rgba(255,166,87,.07);padding:8px 12px;border-radius:0 8px 8px 0}
+  .tag{display:inline-block;font-size:11px;padding:1px 8px;border-radius:20px;border:1px solid var(--line);color:var(--mut)}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>LLM 與 VLM 微調指南</h1>
+<p class="mut">從一般大型語言模型（LLM）到視覺語言模型（VLM）的微調方法、挑戰與解法；以本專案（Cosmos-Reason2-2B VQA LoRA）為實例。含動畫資料流圖。</p>
+
+<h2>1 · LLM 微調：方法總覽</h2>
+<table>
+<tr><th>方法</th><th>更新什麼</th><th>成本/顯存</th><th>適用</th></tr>
+<tr><td><b>Full fine-tune</b></td><td>全部權重</td><td>最高（需存全部梯度+優化器狀態）</td><td>資料多、要最大改變</td></tr>
+<tr><td><b>LoRA</b></td><td>凍結原權重，學低秩旁路 A·B</td><td>低（僅 ~0.1–1% 參數）</td><td>多數領域微調（本專案）</td></tr>
+<tr><td><b>QLoRA</b></td><td>4-bit 量化底座 + LoRA</td><td>最低（單卡可調大模型）</td><td>顯存受限</td></tr>
+<tr><td><b>Adapter</b></td><td>每層插入小瓶頸模組</td><td>低</td><td>多任務切換</td></tr>
+<tr><td><b>Prompt / Prefix tuning</b></td><td>只學軟提示向量</td><td>極低</td><td>輕量任務適配</td></tr>
+</table>
+
+<div class="card">
+<h3>LoRA 原理（動畫）：凍結 W，只學低秩 A·B</h3>
+<svg viewBox="0 0 720 200" width="100%">
+  <defs><marker id="a1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4cc2ff"/></marker>
+  <style>.fl{stroke:#4cc2ff;stroke-width:2.5;fill:none;stroke-dasharray:6 10;animation:d 1s linear infinite}
+  @keyframes d{to{stroke-dashoffset:-32}}.frozen{fill:#1f2832;stroke:#586675}.train{fill:#13261a;stroke:#7ee787}</style></defs>
+  <text x="20" y="105" fill="#9fb0c0" font-size="13">x</text>
+  <rect class="frozen" x="120" y="60" width="150" height="80" rx="8"/><text x="140" y="95" fill="#e6edf3" font-size="13">W (凍結)</text><text x="140" y="115" fill="#9fb0c0" font-size="11">原始預訓練權重</text>
+  <rect class="train" x="120" y="155" width="70" height="34" rx="6"/><text x="134" y="177" fill="#7ee787" font-size="12">A (r×d)</text>
+  <rect class="train" x="200" y="155" width="70" height="34" rx="6"/><text x="214" y="177" fill="#7ee787" font-size="12">B (d×r)</text>
+  <circle cx="430" cy="100" r="18" fill="#1f2832" stroke="#2b3947"/><text x="423" y="105" fill="#e6edf3" font-size="16">+</text>
+  <text x="560" y="105" fill="#9fb0c0" font-size="13">h = Wx + B·A·x</text>
+  <path class="fl" d="M35,100 L120,100"/>
+  <path class="fl" d="M270,100 L412,100"/>
+  <path class="fl" style="stroke:#7ee787" d="M35,100 C70,100 70,172 120,172"/>
+  <path class="fl" style="stroke:#7ee787" d="M270,172 C300,172 360,110 412,104"/>
+  <path class="fl" d="M448,100 L555,100" marker-end="url(#a1)"/>
+</svg>
+<p class="mut">只有低秩 <b style="color:var(--acc2)">A、B</b>（綠）可訓練，原始 <b>W</b> 凍結。合併時 <code>W' = W + B·A</code>，得到與原模型同形狀的權重 → 可直接「置換」回原架構（本專案 swap 的基礎）。本專案：r=16, α=32, 僅 0.81% 參數可訓練。</p>
+</div>
+
+<h3>標準步驟</h3>
+<ol>
+<li><b>資料準備</b>：整理成指令/對話格式；切 train/val；定義標籤遮罩（只對「答案」算 loss）。</li>
+<li><b>選 target 模組</b>：LoRA 通常掛在注意力 q/k/v/o 與 MLP gate/up/down proj。</li>
+<li><b>超參數</b>：r（秩）、α（縮放）、dropout、lr（1e-4 常見）、batch×grad-accum、warmup、steps。</li>
+<li><b>訓練</b>：bf16 + gradient checkpointing 省顯存；監看 loss 與 grad_norm。</li>
+<li><b>評估</b>：held-out 準確率／任務指標；避免過擬合（小資料用小 r + 早停）。</li>
+</ol>
+
+<h2>2 · VLM 微調：多模態的特定挑戰與解法</h2>
+<div class="card">
+<h3>影像如何進入語言模型（動畫資料流）</h3>
+<svg viewBox="0 0 860 170" width="100%">
+  <defs><marker id="a2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4cc2ff"/></marker>
+  <style>.f2{stroke:#4cc2ff;stroke-width:2.5;fill:none;stroke-dasharray:6 10;animation:dd 1s linear infinite}@keyframes dd{to{stroke-dashoffset:-32}}
+  .nd{fill:#1f2832;stroke:#2b3947;rx:9}</style></defs>
+  <rect class="nd" x="10" y="20" width="90" height="46"/><text x="22" y="48" fill="#e6edf3" font-size="12">影像</text>
+  <rect class="nd" x="160" y="20" width="120" height="46"/><text x="172" y="42" fill="#e6edf3" font-size="12">Vision Encoder</text><text x="172" y="59" fill="#9fb0c0" font-size="10">(ViT)</text>
+  <rect class="nd" x="340" y="20" width="110" height="46"/><text x="352" y="42" fill="#e6edf3" font-size="12">Projector</text><text x="352" y="59" fill="#9fb0c0" font-size="10">對齊到文字空間</text>
+  <rect class="nd" x="10" y="104" width="90" height="46"/><text x="22" y="132" fill="#e6edf3" font-size="12">文字 token</text>
+  <rect class="nd" x="520" y="62" width="150" height="46" style="stroke:#d2a8ff"/><text x="532" y="84" fill="#e6edf3" font-size="12">LLM (Qwen3-VL)</text><text x="532" y="101" fill="#9fb0c0" font-size="10">交錯 image+text token</text>
+  <rect class="nd" x="730" y="62" width="110" height="46"/><text x="742" y="90" fill="#e6edf3" font-size="12">答案 tokens</text>
+  <path class="f2" d="M100,43 L160,43"/><path class="f2" d="M280,43 L340,43"/>
+  <path class="f2" d="M450,43 C485,43 490,80 520,84"/>
+  <path class="f2" d="M100,127 C300,127 360,100 520,92"/>
+  <path class="f2" d="M670,85 L730,85" marker-end="url(#a2)"/>
+</svg>
+</div>
+<table>
+<tr><th>挑戰</th><th>解法（本專案採用）</th></tr>
+<tr><td>多模態對齊：影像特徵 vs 文字 token 空間</td><td>vision encoder → projector 投影到 LLM embedding；chat template 插入 <code>&lt;image&gt;</code> 佔位 → 被展開為 N 個 image token</td></tr>
+<tr><td>image token 與特徵數必須相符</td><td>content 用結構化 <code>[{type:image},{type:text}]</code>（非純字串），否則 token=0 vs features=N 報錯（本專案踩過此坑並修正）</td></tr>
+<tr><td>vision encoder 要不要微調？</td><td>多數 VQA LoRA 凍結 vision、只調 LLM 投影；省顯存又保留視覺泛化</td></tr>
+<tr><td>loss 設計</td><td><b>label masking</b>：只對 assistant 答案 token 算 loss（prompt/影像 token 設 -100）</td></tr>
+<tr><td>資料品質/多樣性</td><td>teacher-VLM 自動生成 + template 高信度骨幹 + 揭露多樣性侷限</td></tr>
+</table>
+
+<h2>3 · VQA 資料集的構成（你問的細節）</h2>
+<table>
+<tr><th>要素</th><th>說明</th><th>本專案</th></tr>
+<tr><td>影像來源</td><td>場景影格（相機/解析度）</td><td>OpenArm 單相機 480×640，從 mp4 抽首/中/尾幀</td></tr>
+<tr><td>問答格式</td><td>單輪 image+Q→A / 多輪；中/英</td><td>單輪、英文、JSONL（<code>images / type / messages</code>）</td></tr>
+<tr><td>題型分佈</td><td>對齊評測類別</td><td>7 類：Attribute/Mechanics/Reasoning/Spatial/Summary/Temporal/Trajectory</td></tr>
+<tr><td>規模</td><td>問答對數</td><td>2,499 對（2,250 train / 249 val），300 影格</td></tr>
+<tr><td>標註方式</td><td>人工 / 大模型生成 / template</td><td>template（規則）+ teacher-VLM（Qwen3-VL-30B-A3B）自動生成</td></tr>
+<tr><td>品質控管</td><td>格式驗證、抽檢</td><td>JSON 解析過濾、type 白名單、與 dense 8B 對照抽檢</td></tr>
+</table>
+<div class="note">教學重點：自動生成可快速擴量，但 teacher 可能幻覺/籠統（見專案報告 §4 的 8B vs 30B-A3B 對照）。實務上常以 template 保底 + teacher 增廣 + 少量人工校正。</div>
+
+<h2>4 · Dense vs MoE（非 dense）</h2>
+<div class="card">
+<h3>MoE 路由（動畫）：每 token 只啟動少數 expert</h3>
+<svg viewBox="0 0 720 190" width="100%">
+  <defs><marker id="a3" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4cc2ff"/></marker>
+  <style>.f3{stroke:#4cc2ff;stroke-width:2.5;fill:none;stroke-dasharray:6 10;animation:de 1s linear infinite}@keyframes de{to{stroke-dashoffset:-32}}
+  .on{fill:#13261a;stroke:#7ee787}.off{fill:#1f2832;stroke:#586675}
+  .blink{animation:bk 2s ease-in-out infinite}@keyframes bk{0%,40%{opacity:1}55%,100%{opacity:.35}}</style></defs>
+  <text x="14" y="100" fill="#9fb0c0" font-size="13">token</text>
+  <rect class="off" x="110" y="78" width="90" height="40" rx="8"/><text x="122" y="103" fill="#e6edf3" font-size="12">Router</text>
+  <g font-size="11" fill="#e6edf3">
+   <rect class="on blink" x="300" y="12" width="120" height="30" rx="6"/><text x="312" y="32">Expert 1 ✓</text>
+   <rect class="off" x="300" y="52" width="120" height="30" rx="6"/><text x="312" y="72">Expert 2</text>
+   <rect class="on blink" x="300" y="92" width="120" height="30" rx="6" style="animation-delay:.4s"/><text x="312" y="112">Expert 3 ✓</text>
+   <rect class="off" x="300" y="132" width="120" height="30" rx="6"/><text x="312" y="152">Expert N</text>
+  </g>
+  <circle cx="560" cy="100" r="16" fill="#1f2832" stroke="#2b3947"/><text x="553" y="105" fill="#e6edf3" font-size="14">Σ</text>
+  <text x="610" y="105" fill="#9fb0c0" font-size="12">輸出</text>
+  <path class="f3" d="M55,95 L110,95"/>
+  <path class="f3" style="stroke:#7ee787" d="M200,90 C250,60 260,30 300,27"/>
+  <path class="f3" style="stroke:#7ee787" d="M200,100 C250,107 260,107 300,107"/>
+  <path class="f3" style="stroke:#7ee787" d="M420,27 C470,40 500,90 544,98"/>
+  <path class="f3" style="stroke:#7ee787" d="M420,107 C470,105 500,102 544,100"/>
+  <path class="f3" d="M576,100 L608,100" marker-end="url(#a3)"/>
+</svg>
+<p class="mut">Router 為每個 token 挑選少數 expert（綠色啟動）。<b>Qwen3-VL-30B-A3B</b>：31B 總參數，每 token ~3B 啟動 → 算力像小模型、品質像大模型；但<b>全部 expert 都要載進顯存（~62GB）</b>。dense（8B）則每 token 走全部參數、~17GB、載入單純。詳見專案報告 §4 的類別/載入差異與實測對照。</p>
+</div>
+
+<h2>5 · 案例分析</h2>
+<div class="grid g2">
+<div class="card"><h3>案例 A — VLM：本專案（Cosmos-R2 VQA LoRA）</h3>
+<p class="mut">影像+問答多模態；凍結 vision、LoRA 調 LLM；label-mask 只對答案算 loss；指標：VQA 準確率（按題型）+ 置換進 VLA 後的 action MSE/MAE。完整數字見專案報告 §6。</p></div>
+<div class="card"><h3>案例 B — 純 LLM LoRA（對照）</h3>
+<p class="mut">純文字指令微調（如客服/領域問答）：無 vision/projector、無 image token；資料是純文字對話；指標多為文字準確率/BLEU/人評。相同點：凍結底座、低秩 A·B、label-mask 答案、bf16+grad-ckpt。相異點：VLM 多了視覺編碼、image-token 對齊與更長序列/顯存壓力。</p></div>
+</div>
+
+<p class="mut" style="margin-top:30px;border-top:1px solid var(--line);padding-top:12px">搭配閱讀：<code>docs/project_report.html</code>（本專案的結果與三方產物）。</p>
+</div></body></html>
