@@ -1,6 +1,16 @@
 import json
 
-from vlm_lora.vqa_dataset import VqaJsonlDataset, mask_prompt_labels
+from vlm_lora.vqa_dataset import VqaCollator, VqaJsonlDataset, mask_prompt_labels
+
+
+def test_to_template_messages_converts_image_string():
+    msgs = [
+        {"role": "user", "content": "<image>\nWhat color?"},
+        {"role": "assistant", "content": "Blue."},
+    ]
+    out = VqaCollator.to_template_messages(msgs)
+    assert out[0]["content"] == [{"type": "image"}, {"type": "text", "text": "What color?"}]
+    assert out[1] == {"role": "assistant", "content": "Blue."}
 
 
 def test_reads_jsonl(tmp_path):

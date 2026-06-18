@@ -40,6 +40,25 @@ class VqaCollator:
         self.processor = processor
         self.max_seq_len = max_seq_len
 
+    @staticmethod
+    def to_template_messages(messages):
+        """Convert user turns whose content is a '<image>...' string into the structured
+        content the Qwen3-VL chat template needs (so image placeholder tokens get emitted).
+        Each '<image>' marker becomes one {"type": "image"} part."""
+        out = []
+        for m in messages:
+            c = m.get("content")
+            if m.get("role") == "user" and isinstance(c, str) and "<image>" in c:
+                n = c.count("<image>")
+                text = c.replace("<image>", "").strip()
+                parts = [{"type": "image"} for _ in range(n)]
+                if text:
+                    parts.append({"type": "text", "text": text})
+                out.append({"role": "user", "content": parts})
+            else:
+                out.append(m)
+        return out
+
     def _imgs(self, paths):
         from PIL import Image
 
@@ -49,11 +68,12 @@ class VqaCollator:
         labels_list = []
         for ex in batch:
             imgs = self._imgs(ex["image_paths"])
+            msgs = self.to_template_messages(ex["messages"])
             prompt = self.processor.apply_chat_template(
-                ex["messages"][:-1], tokenize=False, add_generation_prompt=True
+                msgs[:-1], tokenize=False, add_generation_prompt=True
             )
             full = self.processor.apply_chat_template(
-                ex["messages"], tokenize=False, add_generation_prompt=False
+                msgs, tokenize=False, add_generation_prompt=False
             )
             plen = len(
                 self.processor(text=[prompt], images=imgs or None, return_tensors="pt")["input_ids"][0]
@@ -66,7 +86,7 @@ class VqaCollator:
             labels_list.append(torch.tensor(mask_prompt_labels(fids, plen), dtype=torch.long))
         texts = [
             self.processor.apply_chat_template(
-                ex["messages"], tokenize=False, add_generation_prompt=False
+                self.to_template_messages(ex["messages"]), tokenize=False, add_generation_prompt=False
             )
             for ex in batch
         ]
