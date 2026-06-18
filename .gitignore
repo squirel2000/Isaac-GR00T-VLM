@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+artifacts/
+*.safetensors
+examples/sample_vqa/*.png
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/

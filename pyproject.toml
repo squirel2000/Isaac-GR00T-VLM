@@ -1,0 +1,35 @@
+[project]
+name = "vlm-lora-finetune"
+version = "0.1.0"
+description = "Standalone LoRA fine-tuning of Cosmos-Reason2-2B + weight-swap into GR00T N1.7 VLA."
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "transformers>=4.57.0",
+    "peft==0.17.1",
+    "accelerate",
+    "safetensors",
+    "tyro",
+    "numpy",
+    "pillow",
+    "opencv-python",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+wandb = ["wandb"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
