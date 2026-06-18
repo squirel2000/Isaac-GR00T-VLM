@@ -4,13 +4,16 @@ import torch
 import tyro
 from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
+from vlm_lora.hf_utils import resolve_model_path
+
 
 def ask(model_dir: str, image: str, question: str, max_new_tokens: int = 128) -> str:
     from PIL import Image
 
-    proc = AutoProcessor.from_pretrained(model_dir, trust_remote_code=True)
+    md = resolve_model_path(model_dir)
+    proc = AutoProcessor.from_pretrained(md, trust_remote_code=True)
     model = Qwen3VLForConditionalGeneration.from_pretrained(
-        model_dir, torch_dtype=torch.bfloat16, trust_remote_code=True, device_map="auto"
+        md, torch_dtype=torch.bfloat16, trust_remote_code=True, device_map="auto"
     )
     msgs = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": question}]}]
     text = proc.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)

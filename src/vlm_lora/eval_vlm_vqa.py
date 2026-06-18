@@ -8,6 +8,8 @@ import torch
 import tyro
 from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
+from vlm_lora.hf_utils import resolve_model_path
+
 
 def _norm(s):
     return "".join(c for c in s.lower() if c.isalnum() or c.isspace()).strip()
@@ -23,9 +25,10 @@ def evaluate(
 ) -> None:
     from PIL import Image
 
-    proc = AutoProcessor.from_pretrained(model_dir, trust_remote_code=True)
+    md = resolve_model_path(model_dir)
+    proc = AutoProcessor.from_pretrained(md, trust_remote_code=True)
     model = Qwen3VLForConditionalGeneration.from_pretrained(
-        model_dir, torch_dtype=torch.bfloat16, trust_remote_code=True, device_map="auto"
+        md, torch_dtype=torch.bfloat16, trust_remote_code=True, device_map="auto"
     )
     rows = [json.loads(x) for x in open(val_jsonl, encoding="utf-8") if x.strip()]
     by = defaultdict(lambda: [0, 0])

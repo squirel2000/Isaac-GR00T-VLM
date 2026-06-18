@@ -12,15 +12,17 @@ from transformers import (
     TrainingArguments,
 )
 
+from vlm_lora.hf_utils import resolve_model_path
 from vlm_lora.lora_args import VlmLoraConfig, build_lora_config
 from vlm_lora.vqa_dataset import VqaCollator, VqaJsonlDataset
 
 
 def main():
     cfg = tyro.cli(VlmLoraConfig)
-    processor = AutoProcessor.from_pretrained(cfg.base_model, trust_remote_code=True)
+    base = resolve_model_path(cfg.base_model)
+    processor = AutoProcessor.from_pretrained(base, trust_remote_code=True)
     model = Qwen3VLForConditionalGeneration.from_pretrained(
-        cfg.base_model,
+        base,
         torch_dtype=torch.bfloat16 if cfg.bf16 else torch.float32,
         trust_remote_code=True,
     )
