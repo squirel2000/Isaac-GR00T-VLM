@@ -2,23 +2,34 @@
 name = "vlm-lora-finetune"
 version = "0.1.0"
 description = "Standalone LoRA fine-tuning of Cosmos-Reason2-2B + weight-swap into GR00T N1.7 VLA."
-requires-python = ">=3.10"
+requires-python = "==3.10.*"
+# Versions pinned to match the GR00T N1.7 (n1d7) env so uv reuses its cached cu128 wheels.
 dependencies = [
-    "torch",
-    "transformers>=4.57.0",
+    "torch==2.7.1",
+    "torchvision==0.22.1",
+    "transformers==4.57.3",
     "peft==0.17.1",
     "accelerate",
     "safetensors",
-    "tyro",
-    "numpy",
+    "tyro==0.9.17",
+    "numpy==1.26.4",
     "pillow",
-    "opencv-python",
+    "opencv-python-headless",
     "pyyaml",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
 wandb = ["wandb"]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [tool.ruff]
 line-length = 100
