@@ -10,3 +10,6 @@ examples/sample_vqa/*.png
 *.egg-info/
 build/
 dist/
+
+# never commit confidential source PDFs
+*.pdf

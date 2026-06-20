@@ -41,7 +41,7 @@
 <p class="mut">獨立 repo <code>Isaac-GR00T-VLM</code> · 對齊附件 PDF「Cosmos-Reason-2（可置換權重）」流程 · 全程於 H100 + uv，<b>不修改 Isaac-GR00T_n1d7</b>。</p>
 <p><span class="tag">Cosmos-Reason2-2B (Qwen3-VL)</span> <span class="tag">PEFT LoRA r=16</span>
    <span class="tag">teacher: Qwen3-VL-30B-A3B (MoE)</span> <span class="tag">OpenArm O6</span></p>
-<p class="toc"><a href="#arch">架構</a><a href="#prod">產物與路徑</a><a href="#vqa">VQA 資料集</a><a href="#ft">微調流程</a><a href="#eval">評估與 MSE/MAE</a><a href="#cmp">Teacher 比較</a><a href="#concl">結論</a></p>
+<p class="toc"><a href="#arch">架構</a><a href="#prod">產物與路徑</a><a href="#vqa">VQA 資料集</a><a href="#ft">微調流程</a><a href="#eval">評估與 MSE/MAE</a><a href="#case">案例分析</a><a href="#cmp">Teacher 比較</a><a href="#concl">結論</a><a href="#ops">附錄</a></p>
 <p class="mut">完整動畫架構圖（light theme，獨立檔）：<code>docs/architecture_dataflow.html</code>。一般概念（LoRA/MoE/多模態）：<code>docs/llm_vlm_finetuning_guide.html</code>。</p>
 
 <h2 id="arch">1 · 架構與資料流（動畫）</h2>
@@ -176,6 +176,36 @@
 </table>
 <p class="mut">實測：loss 2.62 → ~0.15（train_loss），~1.29 s/it，trainable 0.81%（17.4M / 2.14B）。</p>
 </div>
+<div class="card">
+<h3>參數選擇 Q&amp;A（<code>examples/finetune_cosmos_r2_lora.sh</code> 的預設值）</h3>
+<p><span class="q">LORA_R=16 / LORA_ALPHA=32？</span> r 是低秩更新的秩(容量)：r 越大可學越多但參數多、易過擬合；越小更省更正則。16 是領域 SFT 常用折衷。α 是縮放，<code>有效倍率 = α/r = 2</code>（α=2r 啟發式）；α 越大 LoRA 影響越強、過大易不穩。兩者決定「學多少、放多大」。</p>
+<p><span class="q">PER_DEVICE_BATCH_SIZE=1 + GRAD_ACCUM=8？會變慢嗎？</span> 影像 token 使序列很長、顯存吃重，故 per-device batch 用 1 避免 OOM；grad-accum 8 累積 8 個 micro-batch 才更新一次 → <code>有效 batch = 8</code>。<b>不是單純變慢</b>：本來就要處理這 8 個樣本，差別只在「8 次前後傳才更新一次」vs「一次大 batch」，總吞吐相近、只是 optimizer step 數較少。H100 80GB 其實可試 batch 2–4 加速；我保守用 1 確保長序列不 OOM，可依顯存調整。</p>
+<p><span class="q">LORA_TARGET=llm 而非 vlm（vision）？</span> 目標是提升「語言/推理理解」(VQA)，而推理發生在 LLM；故對 LLM 的 q/k/v/o + gate/up/down 投影加 LoRA。調 vision encoder 成本高、對 VQA 推理幫助小、且可能破壞既有視覺特徵。要也調視覺可設 <code>--lora-on-vision</code> 或 <code>--lora-target all-linear</code>。</p>
+<p><span class="q">為何參數比 GR00T 原本微調少很多？</span> GR00T 的 <code>FinetuneConfig</code> 要訓練<b>整個 VLA</b>（action head + projector + diffusion，加 tune_llm/tune_visual、state/action 增強、embodiment、modality、eval…），旋鈕很多。我們<b>只對 VLM 做 VQA 語言 LoRA</b>——沒有 action head / diffusion / embodiment / modality，自然只需 LoRA + 少數訓練超參。範疇不同：VLM 語言 SFT vs 全 VLA action 訓練。</p>
+</div>
+<div class="card">
+<h3>DIY：用你自己的影像跑 VQA → 微調 → 驗證 → 整合回 GR00T</h3>
+<p class="mut">指令都在 <code>Isaac-GR00T-VLM/</code> 下；設定集中於 <code>configs/default.yaml</code>。「換自己的影像」= 換 step 1 的 <code>--dataset-path</code>（LeRobot 格式）或直接提供你的 VQA JSONL。</p>
+<div class="formula">
+# 0) env (H100)<br>
+cd /data/VLA/tingying/Isaac-GR00T-VLM &amp;&amp; uv sync --extra dev<br><br>
+# 1) generate VQA (your dataset, or bring your own image+Q&amp;A jsonl)<br>
+HF_HUB_OFFLINE=1 CUDA_VISIBLE_DEVICES=0 uv run python -m vlm_lora.gen_vqa_from_lerobot \<br>
+&nbsp;&nbsp;--dataset-path &lt;YOUR_LEROBOT_DATASET&gt; --out-dir artifacts/vqa --num-episodes 100<br><br>
+# 2) LoRA fine-tune Cosmos-R2<br>
+HF_HUB_OFFLINE=1 CUDA_VISIBLE_DEVICES=0 uv run python -m vlm_lora.train_vlm_lora \<br>
+&nbsp;&nbsp;--dataset-path artifacts/vqa/data.train.jsonl --image-root artifacts/vqa --output-dir artifacts/cosmos_r2_lora<br><br>
+# 3) merge -> Product A (standalone VLM)<br>
+uv run python -m vlm_lora.merge_lora --adapter-dir artifacts/cosmos_r2_lora \<br>
+&nbsp;&nbsp;--out-dir .../gr00t/lora_tuned_vlm/Cosmos-Reason2-2B-lora-merged<br><br>
+# 4) integrate back into GR00T (swap backbone) -> Product B<br>
+uv run python -m vlm_lora.swap_backbone --vla-ckpt &lt;BASELINE_VLA&gt; \<br>
+&nbsp;&nbsp;--merged-vlm .../lora_tuned_vlm/... --out-dir .../swapped_checkpoints/...<br><br>
+# 5) evaluate: VLM VQA + VLA open-loop (n1d7 env, MPLBACKEND=Agg)<br>
+uv run python -m vlm_lora.eval_vlm_vqa --model-dir &lt;A&gt; --val-jsonl artifacts/vqa/data.val.jsonl --image-root artifacts/vqa --out-json acc.json
+</div>
+<p class="mut">腳本：<code>src/vlm_lora/</code>；資料集：<code>/data/VLA/datasets/</code>；產物：<code>IsaacLab-GR00T/artifacts/checkpoints/gr00t/{lora_tuned_vlm,swapped_checkpoints}/</code>。</p>
+</div>
 
 <h2 id="eval">5 · 評估流程與 MSE/MAE 計算（含動畫範例）</h2>
 <div class="card">
@@ -224,6 +254,29 @@
 <p class="note"><b>結論</b>：VLM VQA +57.8%，但 swapped 的 action 略差（MSE 1.81e-4→5.18e-4）——置換後 action head 未針對新 VLM 特徵重訓 → 「VLM 理解提升 ≠ action 提升」。未來可 swap 後輕量再訓 action head。</p>
 </div>
 
+<h2 id="case">5c · 案例分析（實際圖像 + VQA + 路徑，可自行驗證）</h2>
+<div class="card">
+<p class="mut">來源：episode 795 的 early / mid / late 三幀（同一集，動作前/中/後）。圖檔複本在 <code>docs/assets/</code>；H100 原始在 <code>Isaac-GR00T-VLM/artifacts/vqa/images/</code>；對應 VQA 在 <code>artifacts/vqa/data.jsonl</code>。</p>
+<div class="grid g3">
+  <div><img src="assets/ep000795_f000000.png" style="width:100%;border-radius:8px" alt="early frame"><small>f000000 (early)</small></div>
+  <div><img src="assets/ep000795_f000224.png" style="width:100%;border-radius:8px" alt="mid frame"><small>f000224 (mid)</small></div>
+  <div><img src="assets/ep000795_f000449.png" style="width:100%;border-radius:8px" alt="late frame"><small>f000449 (late)</small></div>
+</div>
+<table>
+<tr><th>frame</th><th>type (source)</th><th>question → answer</th></tr>
+<tr><td>early</td><td>Temporal (template)</td><td>Has the can already been placed? → No, the robot is still moving the can</td></tr>
+<tr><td>late</td><td>Temporal (template)</td><td>Has the can already been placed? → Yes, the can has been placed</td></tr>
+<tr><td>mid</td><td>Attribute (teacher)</td><td>What color is the can? → Green</td></tr>
+<tr><td>any</td><td>Trajectory (template)</td><td>On which plate will the can be placed? → On the orange plate</td></tr>
+</table>
+<h3 style="margin-top:14px">Open-loop 軌跡圖（GT vs predicted action，逐維度）</h3>
+<div class="grid g2">
+  <div><img src="assets/baseline_traj0.jpeg" style="width:100%;border-radius:8px" alt="baseline trajectory"><small>baseline · MSE 1.81e-4</small></div>
+  <div><img src="assets/swapped_traj0.jpeg" style="width:100%;border-radius:8px" alt="swapped trajectory"><small>swapped (Cosmos-R2 LoRA) · MSE 5.18e-4</small></div>
+</div>
+<p class="mut">原始檔：<code>artifacts/eval/{baseline,swapped}_traj0.jpeg</code>。</p>
+</div>
+
 <h2 id="cmp">6 · Teacher 比較：30B-A3B (MoE) vs 8B (dense)</h2>
 <div class="card"><div id="cmp"></div>
 <p class="mut">30B-A3B 題型覆蓋廣但答案較簡短/籠統；8B 每影格穩定 4 題、推理較具體。詳細的 dense vs MoE 原理（router/expert/協同）見 <code>llm_vlm_finetuning_guide.html</code>。</p></div>
@@ -235,7 +288,20 @@
 <li><b>資料多樣性</b>：2 任務/單相機 → 過擬合風險；未來擴多資料集（real+sim、head/wrist 多相機）。</li>
 <li><b>對齊特徵</b>：swap 後對 action head 輕量再訓練，可望讓 VLM 提升轉化為 action 提升。</li>
 </ul>
-<p class="mut" style="margin-top:24px;border-top:1px solid var(--line);padding-top:12px">數據來源：artifacts/{vqa/stats.json, teacher_compare.json, vqa_acc_*.json, eval/}。</p>
+<h2 id="ops">附錄 · 操作與疑難排解</h2>
+<div class="card">
+<p><b>雙環境</b>：本 repo 的 uv env 做生成/訓練/合併/置換/推論/VLM 評估；<b>VLA open-loop 評估</b>在 H100 的 n1d7 env（需 <code>gr00t</code>）唯讀執行 <code>open_loop_eval.py</code>。本機連 H100 用 <code>python scripts/common/pegasus.py</code>（非 uv run）。</p>
+<p><b>實際踩過並解決的坑</b>：</p>
+<ul>
+<li>gated 模型離線載入 → <code>resolve_model_path()</code> 解析本地 cache snapshot（免 HF_TOKEN、免 hub 探測）。</li>
+<li>collator image token → content 須結構化 <code>[{type:image},{type:text}]</code>，否則 token=0 vs features=N 報錯。</li>
+<li>torch 版本 → pin <code>torch==2.7.1</code> + pytorch-cu128 index（重用 n1d7 快取，免重下載）。</li>
+<li>MoE teacher → <code>dtype=bf16</code>（fp32 會 ~124GB OOM）；模型只載一次（勿逐 frame 重載）。</li>
+<li>VLA eval matplotlib → 設 <code>MPLBACKEND=Agg</code>（pegasus 經 Jupyter kernel，預設 inline backend 會報錯）。</li>
+<li>swap 須複製 <code>processor/</code> 與 <code>experiment_cfg/</code> 子目錄，否則 Gr00tPolicy 的 AutoProcessor 找不到處理器。</li>
+</ul>
+</div>
+<p class="mut" style="margin-top:24px;border-top:1px solid var(--line);padding-top:12px">數據來源：artifacts/{vqa/stats.json, teacher_compare.json, vqa_acc_*.json, eval/}；案例圖：docs/assets/。本報告整合自原 vlm_lora_finetune.md。</p>
 
 <script>
 const STATS={"Spatial":300,"Attribute":600,"Temporal":333,"Trajectory":333,"Summary":334,"Reasoning":299,"Mechanics":300};

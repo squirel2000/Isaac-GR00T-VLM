@@ -1,5 +1,15 @@
-# Default paths + hyperparameters for the VLM LoRA flow. CLI flags override these.
-# H100 paths (Pegasus). Local invocations use plain `python scripts/common/pegasus.py`.
+# =============================================================================
+# Single source of truth for the VLM LoRA flow (paths + hyperparameters).
+#
+# HOW TO USE:
+#   - Edit values here to plan a run. The pipeline commands take the SAME names
+#     as CLI flags (e.g. --lora-r, --max-steps) or as env vars in
+#     examples/finetune_cosmos_r2_lora.sh (LORA_R, MAX_STEPS, ...); CLI/env override.
+#   - FINE-TUNE uses: models.base_vlm + teacher_vlm, data.*, lora.*, train.*  (steps 1-2)
+#   - MERGE/SWAP uses: products.lora_tuned_vlm, products.swapped_vla, vla.baseline_ckpt (steps 3-4)
+#   - EVAL uses: data.lerobot_dataset (open-loop), artifacts.vqa/data.val.jsonl (VQA)  (step 5)
+#   H100 paths shown; local→H100 via `python scripts/common/pegasus.py run "<cmd>"`.
+# =============================================================================
 
 models:
   base_vlm: nvidia/Cosmos-Reason2-2B            # gated -> uses local HF cache (resolve_model_path)
