@@ -17,7 +17,8 @@ models:
   teacher_vlm_compare: Qwen/Qwen3-VL-8B-Instruct # dense baseline for the teacher comparison
 
 remote:
-  repo: /data/VLA/tingying/Isaac-GR00T-VLM       # this repo on H100 (renamed from vlm_lora_finetune)
+  repo: /data/VLA/tingying/IsaacLab-GR00T/Isaac-GR00T-VLM   # this repo on H100 (now nested under IsaacLab-GR00T)
+  # repo-local artifacts/ is a symlink -> ../artifacts/vlm_lora (merged into IsaacLab-GR00T/artifacts)
   n1d7_repo: /data/VLA/tingying/IsaacLab-GR00T/Isaac-GR00T_n1d7
   isaaclab_root: /data/VLA/tingying/IsaacLab-GR00T
   gr00t_ckpts: /data/VLA/tingying/IsaacLab-GR00T/artifacts/checkpoints/gr00t
