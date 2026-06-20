@@ -2,31 +2,40 @@
 # H100 paths (Pegasus). Local invocations use plain `python scripts/common/pegasus.py`.
 
 models:
-  base_vlm: nvidia/Cosmos-Reason2-2B            # gated -> export HF_TOKEN
+  base_vlm: nvidia/Cosmos-Reason2-2B            # gated -> uses local HF cache (resolve_model_path)
   teacher_vlm: Qwen/Qwen3-VL-30B-A3B-Instruct   # VQA auto-gen teacher (MoE, ~31B/3B active)
   teacher_vlm_compare: Qwen/Qwen3-VL-8B-Instruct # dense baseline for the teacher comparison
 
 remote:
-  repo: /data/VLA/tingying/vlm_lora_finetune
+  repo: /data/VLA/tingying/Isaac-GR00T-VLM       # this repo on H100 (renamed from vlm_lora_finetune)
   n1d7_repo: /data/VLA/tingying/IsaacLab-GR00T/Isaac-GR00T_n1d7
-  output_root: /data/VLA/tingying/IsaacLab-GR00T/artifacts/checkpoints/gr00t
+  isaaclab_root: /data/VLA/tingying/IsaacLab-GR00T
+  gr00t_ckpts: /data/VLA/tingying/IsaacLab-GR00T/artifacts/checkpoints/gr00t
 
 data:
   lerobot_dataset: /data/VLA/datasets/OpenArm_CanSorting_MultiTask_dataset_O6_0403
   vqa_out: artifacts/vqa
-  num_episodes: 200
+  num_episodes: 100
   frames_per_episode: 3
   val_ratio: 0.1
 
+# --- Product locations (canonical, under IsaacLab-GR00T/artifacts/checkpoints/gr00t) ---
+products:
+  # Product A: LoRA-tuned standalone VLM (deployable, no GR00T dependency)
+  lora_tuned_vlm: /data/VLA/tingying/IsaacLab-GR00T/artifacts/checkpoints/gr00t/lora_tuned_vlm/Cosmos-Reason2-2B-lora-merged
+  # Product B: GR00T N1.7 VLA with the VLM backbone swapped
+  swapped_vla: /data/VLA/tingying/IsaacLab-GR00T/artifacts/checkpoints/gr00t/swapped_checkpoints/N1_7_cosmosR2lora_swapped
+
 vla:
   baseline_ckpt: /data/VLA/tingying/IsaacLab-GR00T/artifacts/checkpoints/gr00t/N1_7_fft_0614_150k_lr1e4_no_tune_visual
-  # alt: N1_7_fft_0614_150k_lr5e5_no_tune_visual
-  swapped_out: /data/VLA/tingying/IsaacLab-GR00T/artifacts/checkpoints/gr00t/N1_7_cosmosR2lora_swapped
+  # alt baseline: N1_7_fft_0614_150k_lr5e5_no_tune_visual
 
+# --- repo-local artifacts (stay inside Isaac-GR00T-VLM) ---
 artifacts:
-  base_snapshot: artifacts/Cosmos-Reason2-2B-base
-  adapter: artifacts/cosmos_r2_lora
-  merged_vlm: artifacts/Cosmos-Reason2-2B-lora-merged
+  base_snapshot: artifacts/Cosmos-Reason2-2B-base   # pre-finetune VLM reference
+  adapter: artifacts/cosmos_r2_lora                 # trained PEFT adapter (pre-merge)
+  vqa: artifacts/vqa                                # generated VQA dataset
+  eval: artifacts/eval                              # eval plots / metrics
 
 lora:
   r: 16

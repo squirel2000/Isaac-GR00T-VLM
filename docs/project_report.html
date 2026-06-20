@@ -10,14 +10,14 @@
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 -apple-system,"Segoe UI",
        "Microsoft JhengHei",system-ui,sans-serif}
-  .wrap{max-width:1040px;margin:0 auto;padding:32px 22px 80px}
-  h1{font-size:27px;margin:.2em 0}h2{font-size:20px;margin:1.7em 0 .5em;border-left:4px solid var(--acc);
+  .wrap{max-width:1060px;margin:0 auto;padding:32px 22px 80px}
+  h1{font-size:27px;margin:.2em 0}h2{font-size:20px;margin:1.8em 0 .5em;border-left:4px solid var(--acc);
      padding-left:10px}h3{font-size:16px;color:var(--acc2);margin:1.2em 0 .4em}
   p{color:var(--ink)}.mut{color:var(--mut)}small{color:var(--mut)}
   code{background:#0b0f14;color:var(--acc3);padding:1px 6px;border-radius:5px;font-size:13px}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0}
   .grid{display:grid;gap:14px}.g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:1fr 1fr 1fr}
-  @media(max-width:760px){.g2,.g3{grid-template-columns:1fr}}
+  @media(max-width:780px){.g2,.g3{grid-template-columns:1fr}}
   table{border-collapse:collapse;width:100%;font-size:14px;margin:6px 0}
   th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
   th{background:var(--panel2);color:var(--acc)}
@@ -28,187 +28,244 @@
   .bar{height:14px;border-radius:7px;background:linear-gradient(90deg,var(--acc),var(--acc4))}
   .kbd{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;color:var(--acc2)}
   .note{border-left:3px solid var(--acc3);background:rgba(255,166,87,.07);padding:8px 12px;border-radius:0 8px 8px 0}
-  .pending{opacity:.6;font-style:italic}
-  .legend span{margin-right:14px;font-size:12.5px}.dot{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:middle;margin-right:4px}
+  .q{color:var(--acc);font-weight:600}
+  .formula{background:#0b0f14;border:1px solid var(--line);border-radius:8px;padding:10px 14px;
+           font-family:ui-monospace,Consolas,monospace;font-size:13.5px;color:var(--acc2);overflow-x:auto}
+  .toc a{color:var(--acc);text-decoration:none;margin-right:14px;font-size:13px}
+  .flow .dot{r:4.5}
 </style>
 </head>
 <body><div class="wrap">
 
 <h1>VLM LoRA Fine-Tuning of Cosmos-Reason2-2B for GR00T N1.7</h1>
-<p class="mut">獨立 repo <code>vlm_lora_finetune</code> · 對齊附件 PDF「Cosmos-Reason-2（可置換權重）」流程 · 全程於 H100 + uv 執行，<b>不修改 Isaac-GR00T_n1d7</b>。</p>
-<p><span class="tag">Cosmos-Reason2-2B (Qwen3-VL)</span> <span class="tag">PEFT LoRA</span>
-   <span class="tag">teacher: Qwen3-VL-30B-A3B (MoE)</span> <span class="tag">OpenArm O6 CanSorting</span>
-   <span class="tag">transformers 4.57.3 · torch 2.7.1+cu128</span></p>
+<p class="mut">獨立 repo <code>Isaac-GR00T-VLM</code> · 對齊附件 PDF「Cosmos-Reason-2（可置換權重）」流程 · 全程於 H100 + uv，<b>不修改 Isaac-GR00T_n1d7</b>。</p>
+<p><span class="tag">Cosmos-Reason2-2B (Qwen3-VL)</span> <span class="tag">PEFT LoRA r=16</span>
+   <span class="tag">teacher: Qwen3-VL-30B-A3B (MoE)</span> <span class="tag">OpenArm O6</span></p>
+<p class="toc"><a href="#arch">架構</a><a href="#prod">產物與路徑</a><a href="#vqa">VQA 資料集</a><a href="#ft">微調流程</a><a href="#eval">評估與 MSE/MAE</a><a href="#cmp">Teacher 比較</a><a href="#concl">結論</a></p>
+<p class="mut">完整動畫架構圖（light theme，獨立檔）：<code>docs/architecture_dataflow.html</code>。一般概念（LoRA/MoE/多模態）：<code>docs/llm_vlm_finetuning_guide.html</code>。</p>
 
-<h2>1 · 架構與資料流（動畫）</h2>
+<h2 id="arch">1 · 架構與資料流（動畫）</h2>
 <div class="card">
-<svg viewBox="0 0 980 250" width="100%" role="img" aria-label="architecture dataflow">
+<svg viewBox="0 0 980 250" width="100%" role="img" aria-label="architecture dataflow" class="flow">
   <defs>
-    <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
-      <path d="M0,0 L7,3 L0,6 Z" fill="#4cc2ff"/></marker>
-    <style>
-      .node{fill:#1f2832;stroke:#2b3947;rx:10}
-      .nt{fill:#e6edf3;font:600 13px 'Segoe UI',sans-serif}.ns{fill:#9fb0c0;font:11px 'Segoe UI'}
-      .edge{stroke:#2b3947;stroke-width:2;fill:none;marker-end:url(#ar)}
-      .flow{stroke:#4cc2ff;stroke-width:2.5;fill:none;stroke-dasharray:7 11;animation:dash 1.1s linear infinite}
-      @keyframes dash{to{stroke-dashoffset:-36}}
-      .prodA{stroke:#7ee787}.prodB{stroke:#ffa657}
-    </style>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4cc2ff"/></marker>
+    <style>.node{fill:#1f2832;stroke:#2b3947}.nt{fill:#e6edf3;font:600 13px 'Segoe UI'}.ns{fill:#9fb0c0;font:11px 'Segoe UI'}
+    .edge{stroke:#2b3947;stroke-width:1.8;fill:none;marker-end:url(#ar)}</style>
   </defs>
-  <!-- nodes -->
-  <g>
-    <rect class="node" x="10" y="95" width="120" height="56"/><text class="nt" x="22" y="120">OpenArm O6</text><text class="ns" x="22" y="138">LeRobot 影片</text>
-    <rect class="node" x="185" y="95" width="135" height="56"/><text class="nt" x="197" y="118">VQA 生成</text><text class="ns" x="197" y="136">teacher+template</text>
-    <rect class="node" x="375" y="95" width="150" height="56"/><text class="nt" x="387" y="118">Cosmos-R2 + LoRA</text><text class="ns" x="387" y="136">PEFT SFT</text>
-    <rect class="node" x="580" y="30" width="170" height="56" style="stroke:#7ee787"/><text class="nt" x="592" y="53">產物A：Standalone VLM</text><text class="ns" x="592" y="71">完整 36 層 · 可部署</text>
-    <rect class="node" x="580" y="160" width="170" height="56" style="stroke:#ffa657"/><text class="nt" x="592" y="183">swapped VLA</text><text class="ns" x="592" y="201">置換 backbone.model.*</text>
-    <rect class="node" x="800" y="30" width="165" height="56"/><text class="nt" x="812" y="53">VLM VQA 評估</text><text class="ns" x="812" y="71">base vs LoRA</text>
-    <rect class="node" x="800" y="160" width="165" height="56"/><text class="nt" x="812" y="183">VLA open-loop</text><text class="ns" x="812" y="201">MSE / MAE</text>
-  </g>
-  <!-- animated edges -->
-  <path class="flow" d="M130,123 L185,123"/>
-  <path class="flow" d="M320,123 L375,123"/>
-  <path class="flow prodA" d="M525,118 C552,108 556,70 580,60"/>
-  <path class="flow prodB" d="M525,128 C552,150 556,182 580,188"/>
-  <path class="flow" d="M750,58 L800,58"/>
-  <path class="flow prodB" d="M750,188 L800,188"/>
-  <text class="ns" x="360" y="40">原 N1.7 VLA ckpt ↘ (保留 action head)</text>
+  <rect class="node" x="10" y="95" width="120" height="56" rx="10"/><text class="nt" x="22" y="120">OpenArm O6</text><text class="ns" x="22" y="138">LeRobot video</text>
+  <rect class="node" x="185" y="95" width="140" height="56" rx="10"/><text class="nt" x="197" y="118">VQA generation</text><text class="ns" x="197" y="136">teacher + template</text>
+  <rect class="node" x="380" y="95" width="150" height="56" rx="10"/><text class="nt" x="392" y="118">Cosmos-R2 + LoRA</text><text class="ns" x="392" y="136">PEFT SFT</text>
+  <rect class="node" x="585" y="28" width="175" height="56" rx="10" style="stroke:#7ee787"/><text class="nt" x="597" y="51">Product A: Standalone VLM</text><text class="ns" x="597" y="69">36 layers · deployable</text>
+  <rect class="node" x="585" y="162" width="175" height="56" rx="10" style="stroke:#ffa657"/><text class="nt" x="597" y="185">Product B: swapped VLA</text><text class="ns" x="597" y="203">swap backbone.model.*</text>
+  <rect class="node" x="810" y="28" width="160" height="56" rx="10" style="stroke:#d2a8ff"/><text class="nt" x="822" y="51">VLM VQA eval</text><text class="ns" x="822" y="69">accuracy by type</text>
+  <rect class="node" x="810" y="162" width="160" height="56" rx="10" style="stroke:#d2a8ff"/><text class="nt" x="822" y="185">VLA open-loop</text><text class="ns" x="822" y="203">MSE / MAE</text>
+  <path class="edge" id="f1" d="M130,123 L185,123"/><path class="edge" id="f2" d="M325,123 L380,123"/>
+  <path class="edge" id="f3" d="M530,116 C558,104 560,66 585,58"/><path class="edge" id="f4" d="M530,130 C558,156 560,186 585,190"/>
+  <path class="edge" id="f5" d="M760,56 L810,56"/><path class="edge" id="f6" d="M760,190 L810,190"/>
+  <circle class="dot" fill="#7ee787"><animateMotion dur="1.5s" repeatCount="indefinite"><mpath href="#f1"/></animateMotion></circle>
+  <circle class="dot" fill="#7ee787"><animateMotion dur="1.5s" repeatCount="indefinite"><mpath href="#f2"/></animateMotion></circle>
+  <circle class="dot" fill="#7ee787"><animateMotion dur="1.7s" repeatCount="indefinite"><mpath href="#f3"/></animateMotion></circle>
+  <circle class="dot" fill="#ffa657"><animateMotion dur="1.7s" repeatCount="indefinite"><mpath href="#f4"/></animateMotion></circle>
+  <circle class="dot" fill="#d2a8ff"><animateMotion dur="1.4s" repeatCount="indefinite"><mpath href="#f5"/></animateMotion></circle>
+  <circle class="dot" fill="#d2a8ff"><animateMotion dur="1.4s" repeatCount="indefinite"><mpath href="#f6"/></animateMotion></circle>
 </svg>
-<p class="mut" style="margin:.2em 0 0">資料流以動畫虛線表示。<b style="color:var(--acc2)">綠</b>=產物A（VLM，可獨立部署）；<b style="color:var(--acc3)">橘</b>=swapped VLA（換權重後的機器人模型）。</p>
 </div>
 
-<h2>2 · 三個產物（明確區分）</h2>
+<h2 id="prod">2 · 三個產物與存放路徑</h2>
 <table>
-<tr><th>代號</th><th>內容</th><th>結構</th><th>產生方式</th><th>用途</th></tr>
-<tr><td><span class="pill a">base</span></td><td>微調前 Cosmos-R2 快照</td><td>dense 完整 36 層</td><td>snapshot</td><td>VLM 微調「前」對照基準</td></tr>
-<tr><td><span class="pill b">產物 A</span></td><td>LoRA 合併後 standalone VLM</td><td>dense 完整 36 層</td><td><code>merge_lora.py</code></td><td>可獨立部署/分享、VQA；swap 來源</td></tr>
-<tr><td><span class="pill c">swapped VLA</span></td><td>A 換進 N1.7 VLA（保留 action head）</td><td>VLA</td><td><code>swap_backbone.py</code></td><td>action 評估（open-loop MSE/MAE）</td></tr>
+<tr><th>代號</th><th>路徑（H100，IsaacLab-GR00T 根目錄下）</th><th>結構 / 用途</th></tr>
+<tr><td><span class="pill b">產物 A</span></td><td><code>artifacts/checkpoints/gr00t/lora_tuned_vlm/Cosmos-Reason2-2B-lora-merged/</code></td><td>dense 完整 36 層；純 transformers 可載入、不依賴 GR00T；VQA 用 + swap 來源</td></tr>
+<tr><td><span class="pill c">swapped VLA</span></td><td><code>artifacts/checkpoints/gr00t/swapped_checkpoints/N1_7_cosmosR2lora_swapped/</code></td><td>GR00T N1.7 VLA，backbone VLM 換成產物 A、保留 action head；action 評估用</td></tr>
+<tr><td><span class="pill a">base</span></td><td><code>Isaac-GR00T-VLM/artifacts/Cosmos-Reason2-2B-base/</code></td><td>微調前 Cosmos-R2 快照；VLM VQA 對照基準</td></tr>
 </table>
-<div class="note">關鍵驗證：swap 的 backbone 權重相容性為 <b>493/493 keys 完全吻合</b>（0 missing、0 shape-mismatch）——證明 LoRA 合併後的 VLM 可無損置換進 VLA 的 <code>backbone.model.*</code>（且自動尊重 <code>select_layer=12</code> 的層裁剪）。</div>
+<div class="note">VLA 相關產物統一放 <code>artifacts/checkpoints/gr00t/</code> 下：LoRA-tuned VLM → <code>lora_tuned_vlm/</code>，swapped checkpoint → <code>swapped_checkpoints/</code>。swap 的 backbone 權重相容性 = <b>493/493 keys 完全吻合</b>（0 missing、0 shape-mismatch）。</div>
 
-<h2>3 · VQA 資料集（從 OpenArm 自動生成）</h2>
-<div class="grid g3">
-  <div class="card"><div style="font-size:30px;font-weight:700;color:var(--acc)">2,499</div><div class="mut">QA 問答對（2,250 train / 249 val）</div></div>
-  <div class="card"><div style="font-size:30px;font-weight:700;color:var(--acc2)">300</div><div class="mut">影格（100 episodes × 3）</div></div>
-  <div class="card"><div style="font-size:30px;font-weight:700;color:var(--acc3)">7</div><div class="mut">題型（對齊 PDF 分類）</div></div>
+<h2 id="vqa">3 · VQA 資料集：原理、生成流程、範例與統計</h2>
+<div class="card">
+<h3>生成管線（動畫）</h3>
+<svg viewBox="0 0 980 150" width="100%" class="flow">
+  <defs><marker id="ar2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#7ee787"/></marker>
+  <style>.n2{fill:#1f2832;stroke:#2b3947}.e2{stroke:#2b3947;stroke-width:1.6;fill:none;marker-end:url(#ar2)}</style></defs>
+  <rect class="n2" x="8" y="50" width="120" height="50" rx="9"/><text class="nt" x="20" y="72">episode.mp4</text><text class="ns" x="20" y="90">450 frames</text>
+  <rect class="n2" x="170" y="50" width="140" height="50" rx="9"/><text class="nt" x="182" y="72">sample 3 frames</text><text class="ns" x="182" y="90">early / mid / late</text>
+  <rect class="n2" x="355" y="18" width="200" height="40" rx="9"/><text class="nt" x="367" y="43">Template (rule) → 4 Q&amp;A</text>
+  <rect class="n2" x="355" y="92" width="200" height="40" rx="9"/><text class="nt" x="367" y="117">Teacher-VLM → k Q&amp;A</text>
+  <rect class="n2" x="600" y="50" width="150" height="50" rx="9"/><text class="nt" x="612" y="72">label masking</text><text class="ns" x="612" y="90">loss on answer only</text>
+  <rect class="n2" x="800" y="50" width="160" height="50" rx="9"/><text class="nt" x="812" y="72">VQA JSONL</text><text class="ns" x="812" y="90">2499 pairs · stats.json</text>
+  <path class="e2" id="v1" d="M128,75 L170,75"/><path class="e2" id="v2" d="M310,70 L355,40"/><path class="e2" id="v3" d="M310,82 L355,110"/>
+  <path class="e2" id="v4" d="M555,40 L600,68"/><path class="e2" id="v5" d="M555,112 L600,82"/><path class="e2" id="v6" d="M750,75 L800,75"/>
+  <circle class="dot" fill="#7ee787"><animateMotion dur="1.5s" repeatCount="indefinite"><mpath href="#v1"/></animateMotion></circle>
+  <circle class="dot" fill="#7ee787"><animateMotion dur="1.6s" repeatCount="indefinite"><mpath href="#v2"/></animateMotion></circle>
+  <circle class="dot" fill="#ffa657"><animateMotion dur="1.6s" repeatCount="indefinite"><mpath href="#v3"/></animateMotion></circle>
+  <circle class="dot" fill="#7ee787"><animateMotion dur="1.5s" repeatCount="indefinite"><mpath href="#v4"/></animateMotion></circle>
+  <circle class="dot" fill="#ffa657"><animateMotion dur="1.5s" repeatCount="indefinite"><mpath href="#v5"/></animateMotion></circle>
+  <circle class="dot" fill="#4cc2ff"><animateMotion dur="1.4s" repeatCount="indefinite"><mpath href="#v6"/></animateMotion></circle>
+</svg>
 </div>
 <div class="card">
-<h3>題型分佈</h3>
+<h3>你的問題，逐一回答</h3>
+<p><span class="q">Q：影像只從 mp4 抽首/中/尾，足夠嗎？是固定規範嗎？</span><br>
+不是固定規範。<code>frames_per_episode</code> 是可調參數（預設 3，取 early/mid/late 以涵蓋「動作前/中/後」三個階段，讓 Temporal 題型有依據）。<b>不足之處</b>：OpenArm 0403 只有單相機、2 種任務（橘/綠盤），所以視覺多樣性偏低 → 屬領域內（in-distribution）資料，泛化有限。要更足夠可：提高每集抽幀數、納入多相機（head/wrist）、納入更多資料集（real+sim）。</p>
+<p><span class="q">Q：模型怎麼知道要產生什麼問答格式？</span><br>
+兩條來源：(1) <b>template</b> 是寫死的規則（固定問句 + 由任務字串解析答案，如顏色），保證格式與正確性；(2) <b>teacher-VLM</b> 由 prompt 指定輸出格式——prompt 要求它「只回傳 JSON list of {type, question, answer}」，程式再解析 JSON、過濾不合格者。所以「格式」來自 prompt 規範 + 後處理驗證，不是模型自行決定。</p>
+<p><span class="q">Q：七種題型分佈是制式規範嗎？</span><br>
+不是。7 類（Attribute / Mechanics / Reasoning / Spatial / Summary / Temporal / Trajectory）是<b>我為對齊附件 PDF 的評測分類而定的</b>。template 穩定產出其中 4 類（Summary/Trajectory/Attribute/Temporal）；teacher 被要求涵蓋全部 7 類、補足較難的 Spatial/Reasoning/Mechanics。分佈因此非均勻（見下表）。</p>
+<p><span class="q">Q：2499 是怎麼定義的？</span><br>
+不是預設目標值，而是<b>累加結果</b>：100 episodes × 3 frames = 300 影格；每影格 = template 4 題 + teacher k 題（k 浮動，30B-A3B 約 3–4，偶爾更多）。總和 ≈ 300 ×（4 + ~4.3）= 2499。改 <code>num_episodes</code> / <code>frames_per_episode</code> 就會改變總數。</p>
+<p><span class="q">Q：teacher-VLM 如何知道要補什麼、生成什麼？</span><br>
+它<b>不是「知道缺什麼」</b>。流程是：餵給它 <code>影像 + 任務字串 + 7 類型名稱</code>，prompt 要求「產生涵蓋這些類型的多樣問答」；它依影像內容生成。template 才是「保證骨幹」，teacher 是「增廣多樣性」。兩者合併、去重後即資料集。</p>
+</div>
+<div class="card">
+<h3>實際範例（task: place the can on the orange plate）</h3>
+<table>
+<tr><th>來源</th><th>type</th><th>question → answer</th></tr>
+<tr><td>template</td><td>Summary</td><td>What is the dual-arm robot doing? → can-sorting: place the can on the orange plate</td></tr>
+<tr><td>template</td><td>Attribute</td><td>Color of the target plate? → orange</td></tr>
+<tr><td>template</td><td>Temporal</td><td>Has the can been placed yet? → (early) No, still moving / (late) Yes</td></tr>
+<tr><td>teacher</td><td>Spatial</td><td>Where is the green plate relative to the orange plate? → To the right</td></tr>
+<tr><td>teacher</td><td>Mechanics</td><td>How is the can positioned on the plate? → standing upright</td></tr>
+<tr><td>teacher</td><td>Reasoning</td><td>Why place the can on the plate? → to organize objects</td></tr>
+</table>
+<h3 style="margin-top:14px">題型分佈統計（total 2499 · 300 images）</h3>
 <div id="typebars"></div>
-<p class="mut" style="margin-top:10px"><b>生成方式</b>：每影格 = template（Summary/Trajectory/Attribute/Temporal，高信度、規則式）+ teacher-VLM（Qwen3-VL-30B-A3B 補 Spatial/Reasoning/Mechanics 等）。<b>多樣性侷限</b>：OpenArm 0403 僅 2 種任務（橘/綠盤）、單相機 → 場景多樣性低，本資料集偏領域過擬合；未來可擴充 <code>VLA/datasets/</code> 多資料集（real+sim、head/wrist 多相機）。</p>
 </div>
 
-<h2>4 · Teacher 比較：Qwen3-VL-30B-A3B (MoE) vs Qwen3-VL-8B-Instruct (dense)</h2>
+<h2 id="ft">4 · 如何從 GR00T 抽離 Cosmos-Reason2-2B，與微調步驟/參數</h2>
 <div class="card">
-<h3>什麼是 dense / 非 dense（MoE）？</h3>
+<h3>抽離與置換流程（動畫）</h3>
+<p class="mut">GR00T N1.7 (<code>Gr00tN1d7</code>) = <b>backbone（VLM）</b> + <b>action head（DiT 流匹配）</b>。backbone 是 <code>Qwen3Backbone</code>，內部 <code>self.model = Qwen3VLForConditionalGeneration</code> —— <b>那就是 Cosmos-Reason2-2B</b>（VLA 內被裁剪到 <code>select_layer=12</code> 層）。我們不動 VLA，改為「獨立載入完整 Cosmos-R2 → LoRA → 合併 → 把權重塞回 VLA 的 <code>backbone.model.*</code>」。</p>
+<svg viewBox="0 0 980 180" width="100%" class="flow">
+ <defs><marker id="ar3" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4cc2ff"/></marker>
+ <style>.n3{fill:#1f2832;stroke:#2b3947}.e3{stroke:#2b3947;stroke-width:1.6;fill:none;marker-end:url(#ar3)}</style></defs>
+ <rect class="n3" x="6" y="20" width="150" height="64" rx="9" style="stroke:#ffa657"/><text class="nt" x="18" y="42">GR00T N1.7 VLA</text><text class="ns" x="18" y="60">backbone.model.* +</text><text class="ns" x="18" y="74">action head</text>
+ <rect class="n3" x="200" y="20" width="160" height="64" rx="9" style="stroke:#2563eb"/><text class="nt" x="212" y="42">load Cosmos-R2</text><text class="ns" x="212" y="60">Qwen3VLForCond...</text><text class="ns" x="212" y="74">(36 layers, full)</text>
+ <rect class="n3" x="405" y="20" width="150" height="64" rx="9" style="stroke:#2563eb"/><text class="nt" x="417" y="46">PEFT LoRA</text><text class="ns" x="417" y="64">train A·B only</text>
+ <rect class="n3" x="600" y="20" width="150" height="64" rx="9" style="stroke:#7ee787"/><text class="nt" x="612" y="46">merge_and_unload</text><text class="ns" x="612" y="64">→ Product A</text>
+ <rect class="n3" x="795" y="20" width="175" height="64" rx="9" style="stroke:#ffa657"/><text class="nt" x="807" y="42">swap into VLA</text><text class="ns" x="807" y="60">overwrite backbone.model.*</text><text class="ns" x="807" y="74">keep action head</text>
+ <text class="ns" x="200" y="120">↑ 與 VLA backbone 同源（Cosmos-R2），故權重可置換</text>
+ <path class="e3" id="x1" d="M156,52 L200,52"/><path class="e3" id="x2" d="M360,52 L405,52"/><path class="e3" id="x3" d="M555,52 L600,52"/><path class="e3" id="x4" d="M750,52 L795,52"/>
+ <path class="e3" id="x5" d="M880,84 C880,140 90,140 80,86"/>
+ <circle class="dot" fill="#2563eb"><animateMotion dur="1.5s" repeatCount="indefinite"><mpath href="#x1"/></animateMotion></circle>
+ <circle class="dot" fill="#2563eb"><animateMotion dur="1.4s" repeatCount="indefinite"><mpath href="#x2"/></animateMotion></circle>
+ <circle class="dot" fill="#7ee787"><animateMotion dur="1.4s" repeatCount="indefinite"><mpath href="#x3"/></animateMotion></circle>
+ <circle class="dot" fill="#ffa657"><animateMotion dur="1.4s" repeatCount="indefinite"><mpath href="#x4"/></animateMotion></circle>
+ <circle class="dot" fill="#ffa657"><animateMotion dur="2.4s" repeatCount="indefinite"><mpath href="#x5"/></animateMotion></circle>
+</svg>
+</div>
+<div class="card">
+<h3>每步的目的</h3>
 <table>
-<tr><th></th><th>Dense（如 Qwen3-VL-8B-Instruct）</th><th>MoE / 非 dense（如 Qwen3-VL-30B-A3B）</th></tr>
-<tr><td>FFN 結構</td><td>每個 transformer block 一個前饋網路，<b>每個 token 走過全部參數</b></td><td>每個 block 多個 expert FFN + router(gating)，<b>每個 token 只啟動少數 expert</b></td></tr>
-<tr><td>參數</td><td>8B 全部啟動</td><td>31B 總量、每 token 僅 ~3B 啟動（A3B）</td></tr>
-<tr><td>transformers 類別</td><td><code>Qwen3VLForConditionalGeneration</code></td><td><code>Qwen3VLMoeForConditionalGeneration</code></td></tr>
-<tr><td>載入</td><td>~17GB、單一類別、直接載入</td><td><b>所有 expert 都要進顯存 ~62GB</b>（bf16，13 shards）；「快」指算力非記憶體；需 <code>device_map=auto</code>，建議 flash-attn</td></tr>
-<tr><td>載入複雜點</td><td>無</td><td>需確認 transformers 含 MoE 類別（4.57.3 已含）；fp32 會 ~124GB 爆 80GB → 必須 bf16</td></tr>
+<tr><th>步驟</th><th>目的 / 作用</th></tr>
+<tr><td>1. 生成 VQA</td><td>建立領域問答監督訊號（語言 loss），讓 VLM 學會理解此場景</td></tr>
+<tr><td>2. 載入 Cosmos-R2（完整）</td><td>取得與 VLA backbone 同源的 VLM；獨立訓練不污染 VLA</td></tr>
+<tr><td>3. LoRA SFT</td><td>凍結原權重、只學低秩旁路 → 省顯存、避免災難性遺忘、產出可合併權重</td></tr>
+<tr><td>4. merge_and_unload</td><td>把 LoRA 併回主權重 → 得到形狀與原模型相同的 standalone VLM（產物 A）</td></tr>
+<tr><td>5. swap_backbone</td><td>用產物 A 覆蓋 VLA 的 <code>backbone.model.*</code>（交集 493 keys、尊重 12 層裁剪），保留 action head → 產物 B</td></tr>
 </table>
-</div>
-<div class="card">
-<h3>同一影格下兩者產生的 QA（實測，task：place the can on the orange plate）</h3>
-<div id="cmp"></div>
-<p class="note" style="margin-top:10px"><b>觀察</b>：30B-A3B (MoE) 題型覆蓋較廣（某些影格產 7 題，含 Summary/Temporal/Trajectory），但答案較簡短、推理偏籠統（如 reasoning：「to complete a task」）；8B (dense) 每影格穩定 4 題、格式一致、推理較具體落地（「To place it on the orange plate as per the task」）。<b>啟示</b>：對「結構化抽取」這類任務，較大的 MoE 未必一致更好；dense 8B 在格式穩定與具體性上反而占優。本專案以 30B-A3B 為主 teacher 取其覆蓋廣度，template 提供高信度骨幹。</p>
-</div>
-
-<h2>5 · 微調步驟與參數</h2>
-<div class="grid g2">
-<div class="card"><h3>LoRA SFT（產物 A）</h3>
+<h3>LoRA 數學（English）</h3>
+<div class="formula">h = W·x + (α / r) · B · A · x &nbsp;&nbsp; with A ∈ ℝ^{r×d}, B ∈ ℝ^{d×r}, r = 16, α = 32 (frozen W)</div>
+<h3>參數選擇與影響</h3>
 <table>
-<tr><td>base</td><td><code>nvidia/Cosmos-Reason2-2B</code>（cached, 離線）</td></tr>
-<tr><td>LoRA r / α / dropout</td><td>16 / 32 / 0.05</td></tr>
-<tr><td>target</td><td>LLM q/k/v/o + gate/up/down proj</td></tr>
-<tr><td>trainable</td><td>17.4M / 2.14B = <b>0.81%</b></td></tr>
-<tr><td>lr / steps / batch</td><td>1e-4 / 2000 / 1×grad-accum 8</td></tr>
-<tr><td>optim / dtype</td><td>adamw_torch / bf16 + grad-checkpoint</td></tr>
-<tr><td>速度</td><td>~1.29 s/it（H100，480×640 影像）</td></tr>
-</table></div>
-<div class="card"><h3>訓練 loss（前 100 步）</h3>
-<svg id="loss" viewBox="0 0 360 170" width="100%"></svg>
-<p class="mut">loss 由 2.62 快速下降至 ~0.33（真實學習，非 2-樣本 smoke 的 0.0004 過擬合）。完整曲線於訓練結束後更新。</p>
-</div>
-</div>
-
-<h2>6 · 評估結果（對齊 PDF 兩張表）</h2>
-<div class="card">
-<h3>6a · VLM VQA 準確率（按題型）：base vs LoRA（249 題 val）</h3>
-<table>
-<tr><th>題型</th><th>base Cosmos-R2</th><th>LoRA（產物 A）</th><th>Δ</th></tr>
-<tr><td>Attribute</td><td>64.1% (41/64)</td><td>96.9% (62/64)</td><td style="color:var(--acc2)">+32.8%</td></tr>
-<tr><td>Mechanics</td><td>29.0% (9/31)</td><td>100% (31/31)</td><td style="color:var(--acc2)">+71.0%</td></tr>
-<tr><td>Reasoning</td><td>0% (0/29)</td><td>79.3% (23/29)</td><td style="color:var(--acc2)">+79.3%</td></tr>
-<tr><td>Spatial</td><td>74.1% (20/27)</td><td>92.6% (25/27)</td><td style="color:var(--acc2)">+18.5%</td></tr>
-<tr><td>Summary</td><td>0% (0/32)</td><td>93.8% (30/32)</td><td style="color:var(--acc2)">+93.8%</td></tr>
-<tr><td>Temporal</td><td>3.3% (1/30)</td><td>96.7% (29/30)</td><td style="color:var(--acc2)">+93.4%</td></tr>
-<tr><td>Trajectory</td><td>47.2% (17/36)</td><td>88.9% (32/36)</td><td style="color:var(--acc2)">+41.7%</td></tr>
-<tr style="font-weight:700"><td>Overall</td><td>35.3% (88/249)</td><td style="color:var(--acc2)">93.2% (232/249)</td><td style="color:var(--acc2)">+57.8%</td></tr>
+<tr><th>參數</th><th>值</th><th>原因 / 影響</th></tr>
+<tr><td>lora_r</td><td>16</td><td>低秩容量；小 r 省參數+抗過擬合，大 r 表達力強。16 為小資料常用折衷</td></tr>
+<tr><td>lora_alpha</td><td>32</td><td>縮放 α/r=2，放大 LoRA 貢獻；過大易不穩</td></tr>
+<tr><td>learning_rate</td><td>1e-4</td><td>LoRA 常用；太高震盪、太低收斂慢</td></tr>
+<tr><td>batch × grad-accum</td><td>1 × 8</td><td>有效 batch 8；單卡省顯存，accum 模擬大 batch 穩定梯度</td></tr>
+<tr><td>max_steps</td><td>2000</td><td>≈7 epochs（2250 train）；夠收斂、又不過久</td></tr>
+<tr><td>bf16 + grad-ckpt</td><td>on</td><td>省顯存、H100 原生 bf16；grad-ckpt 以算力換記憶體</td></tr>
 </table>
-<p class="mut">對齊 PDF 的 VLM 表：LoRA 微調後 VLM 對此領域的理解大幅提升（base 在 Summary/Reasoning 因 template 特定措辭未命中而 0%，LoRA 學會後幾乎全中）。<b>注意</b>：val 與 train 同分佈（in-distribution），數字偏高；真實泛化需獨立場景測試集（見 §8 多樣性侷限）。</p>
+<p class="mut">實測：loss 2.62 → ~0.15（train_loss），~1.29 s/it，trainable 0.81%（17.4M / 2.14B）。</p>
+</div>
+
+<h2 id="eval">5 · 評估流程與 MSE/MAE 計算（含動畫範例）</h2>
+<div class="card">
+<h3>評估管線（動畫）</h3>
+<svg viewBox="0 0 980 130" width="100%" class="flow">
+ <defs><marker id="ar4" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#d2a8ff"/></marker>
+ <style>.n4{fill:#1f2832;stroke:#2b3947}.e4{stroke:#2b3947;stroke-width:1.6;fill:none;marker-end:url(#ar4)}</style></defs>
+ <rect class="n4" x="8" y="40" width="150" height="50" rx="9"/><text class="nt" x="20" y="62">dataset traj</text><text class="ns" x="20" y="80">obs + GT action</text>
+ <rect class="n4" x="200" y="40" width="160" height="50" rx="9"/><text class="nt" x="212" y="62">policy.get_action</text><text class="ns" x="212" y="80">predicted action</text>
+ <rect class="n4" x="405" y="40" width="160" height="50" rx="9"/><text class="nt" x="417" y="62">pred vs GT</text><text class="ns" x="417" y="80">per-step diff</text>
+ <rect class="n4" x="610" y="40" width="150" height="50" rx="9"/><text class="nt" x="622" y="62">MSE / MAE</text><text class="ns" x="622" y="80">mean over N</text>
+ <rect class="n4" x="805" y="40" width="160" height="50" rx="9"/><text class="nt" x="817" y="62">trajectory plot</text><text class="ns" x="817" y="80">.jpeg</text>
+ <path class="e4" id="ev1" d="M158,65 L200,65"/><path class="e4" id="ev2" d="M360,65 L405,65"/><path class="e4" id="ev3" d="M565,65 L610,65"/><path class="e4" id="ev4" d="M760,65 L805,65"/>
+ <circle class="dot" fill="#d2a8ff"><animateMotion dur="1.4s" repeatCount="indefinite"><mpath href="#ev1"/></animateMotion></circle>
+ <circle class="dot" fill="#d2a8ff"><animateMotion dur="1.4s" repeatCount="indefinite"><mpath href="#ev2"/></animateMotion></circle>
+ <circle class="dot" fill="#d2a8ff"><animateMotion dur="1.4s" repeatCount="indefinite"><mpath href="#ev3"/></animateMotion></circle>
+ <circle class="dot" fill="#d2a8ff"><animateMotion dur="1.4s" repeatCount="indefinite"><mpath href="#ev4"/></animateMotion></circle>
+</svg>
+<h3>公式（English）</h3>
+<div class="formula">MSE = (1/N) · Σ (a_pred − a_gt)² &nbsp;&nbsp;&nbsp; MAE = (1/N) · Σ |a_pred − a_gt|<br>N = horizon steps × action dimensions (here 450 steps × 13 dims)</div>
+<h3>動畫範例（3 個 action 維度，一步）</h3>
+<svg id="mseexample" viewBox="0 0 720 150" width="100%"></svg>
+<p class="mut" id="msecalc"></p>
+<p class="mut">真實評估在整條軌跡（450 步 × 13 維）逐步計算後取平均。VLM VQA 準確率則是：對 val 每題用模型生成答案，與標準答案做寬鬆比對（包含匹配），按題型統計命中率。</p>
 </div>
 <div class="card">
-<h3>6b · VLA open-loop action MSE / MAE：baseline vs swapped（OpenArm O6 · traj 0 · horizon 16 · 1000 steps）</h3>
+<h3>5a · VLM VQA 準確率（base vs LoRA，249 題 val）</h3>
 <table>
-<tr><th>VLA checkpoint</th><th>Action MSE ↓</th><th>Action MAE ↓</th></tr>
-<tr><td>baseline（原 N1.7，原始 Cosmos-R2）</td><td>1.81e-4</td><td>6.32e-3</td></tr>
-<tr><td>swapped（換成 LoRA-tuned Cosmos-R2）</td><td>5.18e-4</td><td>8.81e-3</td></tr>
-<tr style="font-weight:700"><td>Δ</td><td style="color:var(--acc3)">+3.37e-4（略差）</td><td style="color:var(--acc3)">+2.49e-3（略差）</td></tr>
+<tr><th>type</th><th>base</th><th>LoRA (Product A)</th><th>Δ</th></tr>
+<tr><td>Attribute</td><td>64.1%</td><td>96.9%</td><td style="color:var(--acc2)">+32.8</td></tr>
+<tr><td>Mechanics</td><td>29.0%</td><td>100%</td><td style="color:var(--acc2)">+71.0</td></tr>
+<tr><td>Reasoning</td><td>0%</td><td>79.3%</td><td style="color:var(--acc2)">+79.3</td></tr>
+<tr><td>Spatial</td><td>74.1%</td><td>92.6%</td><td style="color:var(--acc2)">+18.5</td></tr>
+<tr><td>Summary</td><td>0%</td><td>93.8%</td><td style="color:var(--acc2)">+93.8</td></tr>
+<tr><td>Temporal</td><td>3.3%</td><td>96.7%</td><td style="color:var(--acc2)">+93.4</td></tr>
+<tr><td>Trajectory</td><td>47.2%</td><td>88.9%</td><td style="color:var(--acc2)">+41.7</td></tr>
+<tr style="font-weight:700"><td>Overall</td><td>35.3% (88/249)</td><td style="color:var(--acc2)">93.2% (232/249)</td><td style="color:var(--acc2)">+57.8</td></tr>
 </table>
-<p class="mut">對齊 PDF 的 action 表：兩者 MSE 都極低（皆能準確預測 action），swapped 略高。<b>解讀</b>：VLM 的 VQA 理解力大幅提升（+57.8%），但置換後 action head 未針對新 VLM 特徵重訓 → action 精度略降而非提升，印證「VLM 理解提升 ≠ action 提升」的 side-effect。未來可於 swap 後對 action head 輕量再訓練以對齊特徵分佈。軌跡圖：<code>artifacts/eval/{baseline,swapped}_traj0.jpeg</code>。</p>
+<p class="mut">注意：val 與 train 同分佈（in-distribution），數字偏高；真實泛化需獨立場景測試集。</p>
+<h3>5b · VLA open-loop action（baseline vs swapped · traj 0）</h3>
+<table>
+<tr><th>VLA checkpoint</th><th>MSE ↓</th><th>MAE ↓</th></tr>
+<tr><td>baseline（原 Cosmos-R2）</td><td>1.81e-4</td><td>6.32e-3</td></tr>
+<tr><td>swapped（LoRA-tuned Cosmos-R2）</td><td>5.18e-4</td><td>8.81e-3</td></tr>
+</table>
+<p class="note"><b>結論</b>：VLM VQA +57.8%，但 swapped 的 action 略差（MSE 1.81e-4→5.18e-4）——置換後 action head 未針對新 VLM 特徵重訓 → 「VLM 理解提升 ≠ action 提升」。未來可 swap 後輕量再訓 action head。</p>
 </div>
 
-<h2>7 · 產物 A 的獨立應用</h2>
-<p>產物 A 是完整的 Qwen3-VL checkpoint，<b>不依賴 GR00T</b>，純 <code>transformers</code> 即可載入做 VQA／場景理解。smoke 階段驗證：對橘盤影像問「What color is the plate?」→ 模型答「<b>Orange.</b>」。可 push 到 HF Hub 或複製到任意推論環境部署。</p>
+<h2 id="cmp">6 · Teacher 比較：30B-A3B (MoE) vs 8B (dense)</h2>
+<div class="card"><div id="cmp"></div>
+<p class="mut">30B-A3B 題型覆蓋廣但答案較簡短/籠統；8B 每影格穩定 4 題、推理較具體。詳細的 dense vs MoE 原理（router/expert/協同）見 <code>llm_vlm_finetuning_guide.html</code>。</p></div>
 
-<h2>8 · 結論與未來改進</h2>
+<h2 id="concl">7 · 結論與未來改進</h2>
 <ul>
-<li><b>可行性已證</b>：獨立對 Cosmos-R2 做 VQA LoRA → 合併 standalone VLM → 無損置換進 VLA（493/493），全程不動 n1d7。</li>
-<li><b>side-effect（本次實測）</b>：VLM VQA 由 <b>35.3%→93.2%（+57.8%）</b>，但 swapped VLA 的 action MSE 由 <b>1.81e-4→5.18e-4（略升/略差）</b>——swap 後 VLM 特徵分佈改變、action head 未重新適配，故 VLM 理解力提升未轉成 action 提升。未來可在 swap 後對 action head 輕量再訓練。</li>
-<li><b>資料多樣性</b>：本資料集僅 2 任務/單相機，過擬合風險高；未來擴充多資料集（real+sim、head/wrist 多相機）。</li>
-<li><b>teacher 選擇</b>：30B-A3B 覆蓋廣、8B 具體穩定；可混用或加人工校正提升 QA 品質。</li>
+<li><b>可行性已證</b>：獨立 VLM VQA LoRA → merge（產物 A）→ swap（493/493）→ 產物 B，全程不動 n1d7。</li>
+<li><b>side-effect（實測）</b>：VLM VQA 35.3%→93.2%（+57.8%），但 swapped action MSE 1.81e-4→5.18e-4（略差）。</li>
+<li><b>資料多樣性</b>：2 任務/單相機 → 過擬合風險；未來擴多資料集（real+sim、head/wrist 多相機）。</li>
+<li><b>對齊特徵</b>：swap 後對 action head 輕量再訓練，可望讓 VLM 提升轉化為 action 提升。</li>
 </ul>
-
-<p class="mut" style="margin-top:30px;border-top:1px solid var(--line);padding-top:12px">
-產生於 vlm_lora_finetune · 數據來源：artifacts/{vqa/stats.json, teacher_compare.json, vqa_acc_*.json, eval/}。</p>
+<p class="mut" style="margin-top:24px;border-top:1px solid var(--line);padding-top:12px">數據來源：artifacts/{vqa/stats.json, teacher_compare.json, vqa_acc_*.json, eval/}。</p>
 
 <script>
-const STATS={"total":2499,"by_type":{"Spatial":300,"Attribute":600,"Temporal":333,"Trajectory":333,"Summary":334,"Reasoning":299,"Mechanics":300},"images":300};
-const CMP={"qwen3vl_8b_instruct":[["Attribute","What color is the plate on the left?","Orange"],["Mechanics","What is the robot holding?","A can"],["Reasoning","Why is the robot moving the can?","To place it on the orange plate"],["Spatial","Where is the green plate relative to the orange plate?","To the right of the orange plate"]],
-"qwen3vl_30b_a3b_instruct":[["Attribute","What color is the plate on the left?","Orange"],["Mechanics","What is the robot holding?","A can"],["Reasoning","Why might the robot place the can on the plate?","To complete a task"],["Spatial","Where is the green plate relative to the orange plate?","To the right"],["Summary","What is the overall scene about?","A robot placing a can on a plate"],["Temporal","What happens after the robot holds the can?","It places the can on the plate"],["Trajectory","Path of the can from hand to plate?","Downward and forward"]]};
-const LOSS=[[10,2.62],[20,2.37],[30,1.52],[40,1.04],[50,0.71],[60,0.41],[70,0.47],[80,0.33],[90,0.33],[100,0.37]];
+const STATS={"Spatial":300,"Attribute":600,"Temporal":333,"Trajectory":333,"Summary":334,"Reasoning":299,"Mechanics":300};
+const CMP={a:[["Attribute","Color of the left plate?","Orange"],["Mechanics","What is the robot holding?","A can"],["Reasoning","Why move the can?","To place it on the orange plate"],["Spatial","Green plate vs orange plate?","To the right of the orange plate"]],
+b:[["Attribute","Color of the left plate?","Orange"],["Mechanics","What is the robot holding?","A can"],["Reasoning","Why place the can?","To complete a task"],["Spatial","Green vs orange plate?","To the right"],["Summary","Overall scene?","A robot placing a can on a plate"],["Temporal","After holding the can?","It places it on the plate"],["Trajectory","Path of the can?","Downward and forward"]]};
 // type bars
-(()=>{const m=Math.max(...Object.values(STATS.by_type));let h="";
-Object.entries(STATS.by_type).sort((a,b)=>b[1]-a[1]).forEach(([k,v])=>{
- h+=`<div style="display:flex;align-items:center;gap:10px;margin:5px 0">
- <span style="width:90px;color:var(--mut)">${k}</span>
- <div class="bar" style="width:${Math.round(v/m*72)}%"></div><span class="kbd">${v}</span></div>`;});
+(()=>{const m=Math.max(...Object.values(STATS));let h="";
+Object.entries(STATS).sort((a,b)=>b[1]-a[1]).forEach(([k,v])=>{h+=`<div style="display:flex;align-items:center;gap:10px;margin:5px 0">
+<span style="width:90px;color:var(--mut)">${k}</span><div class="bar" style="width:${Math.round(v/m*72)}%"></div><span class="kbd">${v}</span></div>`;});
 document.getElementById('typebars').innerHTML=h;})();
-// comparison table
-(()=>{const rows=Math.max(CMP.qwen3vl_8b_instruct.length,CMP.qwen3vl_30b_a3b_instruct.length);
-let h="<table><tr><th>#</th><th>Qwen3-VL-8B (dense)</th><th>Qwen3-VL-30B-A3B (MoE)</th></tr>";
-for(let i=0;i<rows;i++){const a=CMP.qwen3vl_8b_instruct[i],b=CMP.qwen3vl_30b_a3b_instruct[i];
- const f=x=>x?`<b style="color:var(--acc2)">[${x[0]}]</b> ${x[1]}<br><span class="mut">→ ${x[2]}</span>`:'<span class="mut">—</span>';
- h+=`<tr><td>${i+1}</td><td>${f(a)}</td><td>${f(b)}</td></tr>`;}
+// teacher comparison
+(()=>{const rows=Math.max(CMP.a.length,CMP.b.length);let h="<table><tr><th>#</th><th>8B dense</th><th>30B-A3B MoE</th></tr>";
+for(let i=0;i<rows;i++){const f=x=>x?`<b style="color:var(--acc2)">[${x[0]}]</b> ${x[1]}<br><span class="mut">→ ${x[2]}</span>`:'<span class="mut">—</span>';
+h+=`<tr><td>${i+1}</td><td>${f(CMP.a[i])}</td><td>${f(CMP.b[i])}</td></tr>`;}
 document.getElementById('cmp').innerHTML=h+"</table>";})();
-// loss sparkline
-(()=>{const W=360,H=170,p=26,xs=LOSS.map(d=>d[0]),ys=LOSS.map(d=>d[1]);
-const xmin=Math.min(...xs),xmax=Math.max(...xs),ymax=Math.max(...ys);
-const X=x=>p+(x-xmin)/(xmax-xmin)*(W-2*p),Y=y=>H-p-(y/ymax)*(H-2*p);
-let d=LOSS.map((pt,i)=>`${i?'L':'M'}${X(pt[0]).toFixed(1)},${Y(pt[1]).toFixed(1)}`).join(' ');
-let dots=LOSS.map(pt=>`<circle cx="${X(pt[0]).toFixed(1)}" cy="${Y(pt[1]).toFixed(1)}" r="2.5" fill="#4cc2ff"/>`).join('');
-document.getElementById('loss').innerHTML=
-`<line x1="${p}" y1="${H-p}" x2="${W-p}" y2="${H-p}" stroke="#2b3947"/>
- <line x1="${p}" y1="${p}" x2="${p}" y2="${H-p}" stroke="#2b3947"/>
- <path d="${d}" fill="none" stroke="#7ee787" stroke-width="2"/>${dots}
- <text x="${p}" y="${H-8}" fill="#9fb0c0" font-size="10">step ${xmin}</text>
- <text x="${W-p-30}" y="${H-8}" fill="#9fb0c0" font-size="10">step ${xmax}</text>
- <text x="4" y="${p+4}" fill="#9fb0c0" font-size="10">${ymax}</text>`;})();
-// eval results injected later via RESULTS (see §6)
-const RESULTS=null;
-if(RESULTS){/* finalized after postall */}
+// MSE/MAE animated worked example
+(()=>{const pred=[0.10,0.52,-0.30],gt=[0.12,0.48,-0.27];
+ const err=pred.map((p,i)=>+(p-gt[i]).toFixed(3));
+ const sq=err.map(e=>+(e*e).toFixed(5)),ab=err.map(e=>+Math.abs(e).toFixed(3));
+ const mse=+(sq.reduce((a,b)=>a+b,0)/3).toFixed(5),mae=+(ab.reduce((a,b)=>a+b,0)/3).toFixed(4);
+ let g='';const X=[60,250,440];
+ for(let i=0;i<3;i++){g+=`<text x="${X[i]}" y="24" fill="#9fb0c0" font-size="11">dim ${i}</text>
+   <text x="${X[i]}" y="48" fill="#4cc2ff" font-size="13">pred ${pred[i]}</text>
+   <text x="${X[i]}" y="70" fill="#7ee787" font-size="13">gt ${gt[i]}</text>
+   <text x="${X[i]}" y="96" fill="#ffa657" font-size="13">err ${err[i]}</text>
+   <text x="${X[i]}" y="118" fill="#d2a8ff" font-size="12">sq ${sq[i]}</text>`;}
+ g+=`<text x="600" y="60" fill="#7ee787" font-size="15">MSE=${mse}</text><text x="600" y="100" fill="#ffa657" font-size="15">MAE=${mae}</text>`;
+ // animated dot pred->err->mse
+ g+=`<path id="mp1" d="M70,52 L70,92" fill="none"/><circle r="4" fill="#ffa657"><animateMotion dur="1.3s" repeatCount="indefinite"><mpath href="#mp1"/></animateMotion></circle>`;
+ document.getElementById('mseexample').innerHTML=g;
+ document.getElementById('msecalc').innerHTML=`example: err=[${err}] → square→mean = <b>MSE ${mse}</b>; abs→mean = <b>MAE ${mae}</b>. (real eval: mean over 450×13 values)`;})();
 </script>
 </div></body></html>

@@ -131,7 +131,20 @@
   <path class="f3" style="stroke:#7ee787" d="M420,107 C470,105 500,102 544,100"/>
   <path class="f3" d="M576,100 L608,100" marker-end="url(#a3)"/>
 </svg>
-<p class="mut">Router 為每個 token 挑選少數 expert（綠色啟動）。<b>Qwen3-VL-30B-A3B</b>：31B 總參數，每 token ~3B 啟動 → 算力像小模型、品質像大模型；但<b>全部 expert 都要載進顯存（~62GB）</b>。dense（8B）則每 token 走全部參數、~17GB、載入單純。詳見專案報告 §4 的類別/載入差異與實測對照。</p>
+<p class="mut">Router 為每個 token 挑選少數 expert（綠色啟動）。<b>Qwen3-VL-30B-A3B</b>：31B 總參數，每 token ~3B 啟動 → 算力像小模型、品質像大模型；但<b>全部 expert 都要載進顯存（~62GB）</b>。dense（8B）則每 token 走全部參數、~17GB、載入單純。</p>
+</div>
+<div class="card">
+<h3>MoE 深入：router、expert、協同運作（你問的）</h3>
+<table>
+<tr><th>問題</th><th>說明</th></tr>
+<tr><td>router 是內建組件嗎？</td><td><b>是</b>。每個 MoE 層內建一個 gating(router) 線性層，對每個 token 算出對各 expert 的分數(softmax)，選出 top-k。它與 expert 一起被訓練。</td></tr>
+<tr><td>expert 是什麼？</td><td>每個 expert 就是一個<b>獨立的前饋網路(FFN)</b>；同一層有 N 個並行 expert。訓練中各 expert 會自然特化到不同的輸入模式/領域。</td></tr>
+<tr><td>如何協同？</td><td>router 為每個 token 選 top-k expert → <b>只計算那 k 個</b> → 用 router 分數加權合併它們的輸出；其餘 expert 對該 token 不計算（這就是省算力的來源）。</td></tr>
+<tr><td>微調的作用/優勢</td><td>固定算力下提供更大的「總容量」(31B)，但每 token 僅 ~3B 參與計算 → 推論快、表達力強。代價：所有 expert 權重都須進顯存(~62GB)，且需 <code>Qwen3VLMoeForConditionalGeneration</code> 類別。</td></tr>
+</table>
+<p><span style="color:var(--acc);font-weight:600">為何 30B-A3B 答案比 8B 簡短/籠統？</span> 這<b>非 MoE 本質</b>。主因：(1) 兩模型的 instruction-tuning 風格不同(30B 偏精簡)；(2) 都用 greedy 解碼(<code>do_sample=False</code>)；(3) 我們只比了 3 影格，樣本小、屬軼事級觀察。不能推論「MoE 就比較籠統」。</p>
+<p><span style="color:var(--acc);font-weight:600">8B 每影格固定 4 題是模型限制嗎？</span> <b>不是</b>。是我的 prompt 要求「generate 4 diverse QA pairs」；8B 嚴格照辦，30B 有時多給(3–7 題)。題數由 prompt 決定，非模型規範。</p>
+<p><span style="color:var(--acc);font-weight:600">若缺 Summary / Temporal / Trajectory 會怎樣？</span> 這三類分別測「場景整體理解 / 時間順序 / 動作路徑」。若缺：VQA 會偏向靜態屬性(顏色/位置)，<b>無法評估時序與全局推理</b>；而對 VLA 來說，時序與軌跡理解正是與 action 最相關的維度，缺了會低估 VLM 對操作任務的幫助。本專案 7 類齊全即為涵蓋這些面向。</p>
 </div>
 
 <h2>5 · 案例分析</h2>

@@ -7,12 +7,12 @@
 - **n1d7 的 uv env**：只用於 **swapped VLA 的 open-loop 評估**（需 `gr00t`），唯讀執行既有 `examples/Openarm_LinkerHandO6/openloop_eval_openarm_o6.sh`。
 - 本機（Windows）以 `python scripts/common/pegasus.py …`（plain python，含 requests/truststore）連 H100；**不是** `uv run`。
 
-## 產物
+## 產物（H100，IsaacLab-GR00T 根目錄下）
 | 代號 | 路徑 | 用途 |
 |---|---|---|
-| base | `artifacts/Cosmos-Reason2-2B-base` | 微調前對照 |
-| 產物 A | `artifacts/Cosmos-Reason2-2B-lora-merged` | standalone VLM（可部署/分享） |
-| swapped VLA | `…/artifacts/checkpoints/gr00t/N1_7_cosmosR2lora_swapped` | action 評估 |
+| base | `Isaac-GR00T-VLM/artifacts/Cosmos-Reason2-2B-base/` | 微調前對照 |
+| 產物 A | `artifacts/checkpoints/gr00t/lora_tuned_vlm/Cosmos-Reason2-2B-lora-merged/` | standalone VLM（可部署/分享） |
+| swapped VLA | `artifacts/checkpoints/gr00t/swapped_checkpoints/N1_7_cosmosR2lora_swapped/` | action 評估 |
 
 ## H100 流程（指令）
 ```bash
