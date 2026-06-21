@@ -16,6 +16,10 @@ dependencies = [
     "pillow",
     "opencv-python-headless",
     "pyyaml",
+    "fastapi",
+    "uvicorn",
+    "pydantic>=2",
+    "httpx",
 ]
 
 [project.optional-dependencies]

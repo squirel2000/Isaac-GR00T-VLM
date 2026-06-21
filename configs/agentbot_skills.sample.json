@@ -1,0 +1,71 @@
+[
+  {
+    "name": "sort_can",
+    "description": "Pick up the can and place it on the plate of the given color.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "target_color": {
+          "enum": [
+            "orange",
+            "green"
+          ],
+          "description": "Which colored plate to place the can on."
+        }
+      },
+      "required": [
+        "target_color"
+      ]
+    }
+  },
+  {
+    "name": "pour_water",
+    "description": "Pour the water from the source container into the target container.",
+    "input_schema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "pick",
+    "description": "Pick up (grasp and lift) the named object.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "object": {
+          "type": "string",
+          "description": "The object to pick up, e.g. 'can', 'cup', 'block'."
+        }
+      },
+      "required": [
+        "object"
+      ]
+    }
+  },
+  {
+    "name": "place",
+    "description": "Place the currently held object onto the named target location.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "Where to place the held object, e.g. 'orange plate', 'tray', 'shelf'."
+        }
+      },
+      "required": [
+        "target"
+      ]
+    }
+  },
+  {
+    "name": "home",
+    "description": "Return the arm to its neutral home / rest pose.",
+    "input_schema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  }
+]
