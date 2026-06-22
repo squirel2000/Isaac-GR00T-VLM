@@ -303,7 +303,8 @@ uv run python -m vlm_lora.eval_vlm_vqa --model-dir &lt;A&gt; --val-jsonl artifac
 </div>
 <p class="mut" style="margin-top:24px;border-top:1px solid var(--line);padding-top:12px">數據來源：artifacts/{vqa/stats.json, teacher_compare.json, vqa_acc_*.json, eval/}；案例圖：docs/assets/。本報告整合自原 vlm_lora_finetune.md。</p>
 
-<h2 id="deploy">8 · 部署：VLM 作為 AgentBot 的 Brain</h2>
+<h2 id="deploy">8 · Serve：將微調 VLM 提供為 tool-calling 端點</h2>
+<p class="mut">範圍說明：本節是 <b>Isaac-GR00T-VLM 的 serve 交付</b>——把微調後的模型包成 OpenAI 相容的 tool-calling 端點，並驗證<b>模型本身</b>的 tool-calling 能力。下游「agentbot 如何用此端點當大腦、啟動 IsaacLab sim、UI 操作與監控、部署」屬 agentbot 範圍，見 <code>agentbot/docs/USING_VLM_BRAIN.md</code>；跨 repo 交付與 4090 runbook 見 <code>IsaacLab-GR00T/docs/DELIVERY_4090.md</code>。</p>
 <div class="card">
 <h3>概覽</h3>
 <p>產物 A（<code>Cosmos-Reason2-2B-lora-merged</code>）可作為 <code>agentbot</code> 編排系統的「Brain」獨立部署。
@@ -363,7 +364,7 @@ bash examples/run_vlm_server.sh
 <div class="formula">
 &lt;tool_call&gt;{"name": "sort_can", "arguments": {"target_color": "orange"}}&lt;/tool_call&gt;
 </div>
-<p>解析邏輯：以正則抽出 <code>&lt;tool_call&gt;…&lt;/tool_call&gt;</code> 標籤內容 → <code>json.loads</code> → 組成 OpenAI <code>tool_calls</code> list。
+<p>解析邏輯：掃描 <code>&lt;tool_call&gt;</code> 後以 brace-matching 取出 JSON（容忍漏結尾 <code>&lt;/tool_call&gt;</code>、支援巢狀 arguments）→ <code>json.loads</code> → 組成 OpenAI <code>tool_calls</code> list。
 若模型產生多個連續 <code>&lt;tool_call&gt;</code> 標籤，每個都會被解析為獨立的 <code>tool_calls</code> 項目（對應多步規劃）。</p>
 </div>
 
@@ -382,29 +383,28 @@ bash examples/run_vlm_server.sh
   <td><span class="pill c">Phase 2 LoRA</span></td>
   <td>Tool-calling LoRA：在 agentbot 真實技能的 <code>instruction+image → &lt;tool_call&gt;</code> 資料上再次 LoRA 微調，讓格式可靠且參數化</td>
   <td>穩定的 tool-calling；多步規劃</td>
-  <td style="color:var(--acc3)">◻ 待實作</td>
+  <td style="color:var(--acc2)">✅ 完成（收斂的 checkpoint-500 → 合併）</td>
 </tr>
 </table>
 <p class="mut">Tool-calling LoRA 訓練資料集：以 agentbot 的 5 個內建技能（<code>sort_can / pick / place / home / pour_water</code>）自動生成 <code>{instruction, image, tool_call}</code> 三元組，格式與 VQA LoRA 相同、僅更換 answer 格式。</p>
 </div>
 
 <div class="card">
-<h3><code>SkillCall</code> schema 與 agentbot 整合</h3>
-<p><code>Gr00tVLMClient.complete()</code> 接收 VLM 回應後，將 <code>tool_calls[0].function</code> 解析為 <code>SkillCall</code>（Pydantic model）：</p>
-<div class="formula" style="font-size:12px">
-# agentbot/contracts.py<br>
-class SkillCall(BaseModel):<br>
-&nbsp;&nbsp;skill: str&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;# tool_calls[0].function.name<br>
-&nbsp;&nbsp;args: dict[str, Any]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;# json.loads(tool_calls[0].function.arguments)<br>
-&nbsp;&nbsp;rationale: str = ""&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;# from content (if any) before tool_call
+<h3>實測 before / after 對照（同樣 tools；:8000 VQA-merged vs :8001 toolcall-merged）</h3>
+<table>
+<tr><th>指令</th><th>VQA-merged（before）</th><th>toolcall-merged（after）</th></tr>
+<tr><td>Sort the can onto the orange plate.</td><td style="color:var(--acc2)">✅ sort_can(orange)</td><td style="color:var(--acc2)">✅ sort_can(orange)</td></tr>
+<tr><td>Pick up the can.</td><td style="color:var(--acc3)">⚠️ 輸出 &lt;tool_call&gt; 但漏結尾標籤 → 變純文字、未解析</td><td style="color:var(--acc2)">✅ pick(object=can)</td></tr>
+<tr><td>Return to the home position.</td><td style="color:var(--acc3)">⚠️ 同上，漏結尾標籤</td><td style="color:var(--acc2)">✅ home()</td></tr>
+</table>
+<p>結論：(1) tool-calling 端到端在 LoRA 前就對 in-domain 的 <code>sort_can</code> 可用；(2) LoRA 的價值是<b>格式可靠度</b>——一致地閉合 <code>&lt;tool_call&gt;</code>，三個技能全部解析成合法 <code>tool_calls</code>；(3) <b>無窄化</b>：僅用 <code>sort_can</code> 資料訓練，卻能正確處理 <code>pick</code>/<code>home</code>（LoRA 強化的是輸出格式，技能選擇來自 prompt 工具清單 + base 模型）；(4) 伺服器 parser 另以 brace-matching 容忍漏結尾標籤，連 base 模型輸出也能解析。<b>建議部署 toolcall-merged</b>。</p>
+<p class="mut">硬體：訓練峰值 ~6 GB、合併 ~5 GB、serve ~4.7 GB VRAM——皆可於單張 4090(24GB) 執行。完整步驟與 4090 操作指南見 <code>IsaacLab-GR00T/docs/DELIVERY_4090.md</code>。</p>
 </div>
-<p>相機影像進入 Brain 的完整路徑：<code>CAMERA</code> 事件 → <code>Monitor.ingest()</code> → <code>state["camera"]</code> → <code>Brain.step()</code> 讀取 state 組成多模態訊息 → POST <code>/v1/chat/completions</code>（含 <code>image_url</code> content part）。</p>
-<p>agentbot 端設定（<code>agentbot/configs/</code>）：</p>
-<div class="formula" style="font-size:12px">
-vlm:<br>
-&nbsp;&nbsp;backend: gr00t-vlm<br>
-&nbsp;&nbsp;base_url: http://&lt;server-host&gt;:8000
-</div>
+
+<div class="card">
+<h3>下游：agentbot 如何消費此端點（屬 agentbot 範圍）</h3>
+<p>agentbot 的 <code>Gr00tVLMClient.complete()</code> 把回傳的 <code>tool_calls</code> 解析成 agentbot 的 <code>SkillCall</code>（<code>name</code> / <code>args</code>），交給 Orchestrator 逐一派工到 GR00T VLA 執行；相機影像則經 <code>CAMERA</code> 事件 → Monitor <code>state["camera"]</code> → Brain 組成多模態訊息送入此端點。agentbot 端只需設定 <code>config/agentbot.yaml</code> 的 <code>vlm.backend: gr00t-vlm</code> + <code>vlm.base_url</code>。</p>
+<p>完整設定、4 程序 sim 啟動、UI 操作、指令與監控、排錯 → 權威操作指南見 <b><code>agentbot/docs/USING_VLM_BRAIN.md</code></b>。</p>
 </div>
 
 <script>

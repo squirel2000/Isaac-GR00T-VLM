@@ -48,17 +48,15 @@ bash examples/run_vlm_server.sh
 - **Response**: the model emits `<tool_call>{"name":"…","arguments":{…}}</tool_call>` tokens; the server parses them into the standard OpenAI `tool_calls` array in the response `choices[0].message`.
 - The served model understands agentbot's skill schema (`sort_can`, `pick`, `place`, `home`, `pour_water`) and returns a `SkillCall`-compatible argument payload.
 
-**AgentBot configuration**
-
-In `agentbot/configs/` set:
+**AgentBot configuration** (`agentbot/config/agentbot.yaml`)
 ```yaml
 vlm:
   backend: gr00t-vlm
-  base_url: http://<server-host>:8000
+  base_url: http://<server-host>:8000/v1
 ```
-`Gr00tVLMClient.complete()` will POST to that endpoint and parse `tool_calls` → `SkillCall`.  Camera frames are plumbed into the Brain via a `CAMERA` event → Monitor `state["camera"]` → multimodal message payload automatically.
+`Gr00tVLMClient.complete()` POSTs to that endpoint and parses `tool_calls` → `SkillCall`; camera frames reach the Brain via a `CAMERA` event → Monitor `state["camera"]` → multimodal message.
 
-詳細整合計畫：[`docs/plans/2026-06-21-vlm-brain-agentbot-integration.md`](docs/plans/2026-06-21-vlm-brain-agentbot-integration.md)。
+> **範圍**：本節是 **serve**（本 repo 的交付：把模型變成端點）。**agentbot 端的部署/啟動 sim/UI 操作/監控**（屬 agentbot 範圍）→ [`agentbot/docs/USING_VLM_BRAIN.md`](../agentbot/docs/USING_VLM_BRAIN.md)；**跨 repo 交付與 4090 runbook** → [`IsaacLab-GR00T/docs/DELIVERY_4090.md`](../docs/DELIVERY_4090.md)。整合計畫：[`docs/plans/2026-06-21-vlm-brain-agentbot-integration.md`](docs/plans/2026-06-21-vlm-brain-agentbot-integration.md)。
 
 > **Note**: All commits are the maintainer's; do not `git commit` / `git push` after editing.
 
