@@ -28,6 +28,40 @@ uv run python -m vlm_lora.eval_vlm_vqa --model-dir <A> --val-jsonl artifacts/vqa
 ## 設定
 **所有可調設定集中在 [`configs/default.yaml`](configs/default.yaml)**（路徑、LoRA 超參、訓練、產物位置），檔內每段都有用途註解。修改該檔即可規劃微調/評估；CLI flags 與 `examples/finetune_cosmos_r2_lora.sh` 的環境變數對應同名設定並可覆蓋。
 
+## Serve as AgentBot's Brain
+
+Product A (the merged standalone VLM) can be served as an **OpenAI-compatible tool-calling endpoint** and consumed by the `agentbot` orchestration system as its "Brain".
+
+**Launch the server**
+```bash
+VLM_MODEL_DIR=<path-to-Cosmos-Reason2-2B-lora-merged> \
+  uv run uvicorn vlm_lora.serve.openai_app:app --host 0.0.0.0 --port 8000
+```
+Or use the convenience wrapper (sets `VLM_MODEL_DIR` from `configs/default.yaml` and passes standard uvicorn flags):
+```bash
+bash examples/run_vlm_server.sh
+```
+
+**I/O contract — OpenAI `/v1/chat/completions` with tool-calling**
+
+- **Request**: standard `{model, messages, tools, tool_choice}` JSON (multimodal messages accepted — `image_url` content parts plumbed through).
+- **Response**: the model emits `<tool_call>{"name":"…","arguments":{…}}</tool_call>` tokens; the server parses them into the standard OpenAI `tool_calls` array in the response `choices[0].message`.
+- The served model understands agentbot's skill schema (`sort_can`, `pick`, `place`, `home`, `pour_water`) and returns a `SkillCall`-compatible argument payload.
+
+**AgentBot configuration**
+
+In `agentbot/configs/` set:
+```yaml
+vlm:
+  backend: gr00t-vlm
+  base_url: http://<server-host>:8000
+```
+`Gr00tVLMClient.complete()` will POST to that endpoint and parse `tool_calls` → `SkillCall`.  Camera frames are plumbed into the Brain via a `CAMERA` event → Monitor `state["camera"]` → multimodal message payload automatically.
+
+詳細整合計畫：[`docs/plans/2026-06-21-vlm-brain-agentbot-integration.md`](docs/plans/2026-06-21-vlm-brain-agentbot-integration.md)。
+
+> **Note**: All commits are the maintainer's; do not `git commit` / `git push` after editing.
+
 ## 文件（docs/）
 - **`project_report.html`** — 結果、流程（動畫）、VQA 生成原理+範例、GR00T↔Cosmos-R2 抽離/整合、評估與 MSE/MAE、案例分析（實際圖像）、DIY、參數 Q&A、附錄。
 - **`llm_vlm_finetuning_guide.html`** — 通用 LLM/VLM 微調概念（LoRA / MoE / 多模態，含動畫）。

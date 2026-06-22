@@ -41,7 +41,7 @@
 <p class="mut">獨立 repo <code>Isaac-GR00T-VLM</code> · 對齊附件 PDF「Cosmos-Reason-2（可置換權重）」流程 · 全程於 H100 + uv，<b>不修改 Isaac-GR00T_n1d7</b>。</p>
 <p><span class="tag">Cosmos-Reason2-2B (Qwen3-VL)</span> <span class="tag">PEFT LoRA r=16</span>
    <span class="tag">teacher: Qwen3-VL-30B-A3B (MoE)</span> <span class="tag">OpenArm O6</span></p>
-<p class="toc"><a href="#arch">架構</a><a href="#prod">產物與路徑</a><a href="#vqa">VQA 資料集</a><a href="#ft">微調流程</a><a href="#eval">評估與 MSE/MAE</a><a href="#case">案例分析</a><a href="#cmp">Teacher 比較</a><a href="#concl">結論</a><a href="#ops">附錄</a></p>
+<p class="toc"><a href="#arch">架構</a><a href="#prod">產物與路徑</a><a href="#vqa">VQA 資料集</a><a href="#ft">微調流程</a><a href="#eval">評估與 MSE/MAE</a><a href="#case">案例分析</a><a href="#cmp">Teacher 比較</a><a href="#concl">結論</a><a href="#ops">附錄</a><a href="#deploy">§8 部署</a></p>
 <p class="mut">完整動畫架構圖（light theme，獨立檔）：<code>docs/architecture_dataflow.html</code>。一般概念（LoRA/MoE/多模態）：<code>docs/llm_vlm_finetuning_guide.html</code>。</p>
 
 <h2 id="arch">1 · 架構與資料流（動畫）</h2>
@@ -302,6 +302,110 @@ uv run python -m vlm_lora.eval_vlm_vqa --model-dir &lt;A&gt; --val-jsonl artifac
 </ul>
 </div>
 <p class="mut" style="margin-top:24px;border-top:1px solid var(--line);padding-top:12px">數據來源：artifacts/{vqa/stats.json, teacher_compare.json, vqa_acc_*.json, eval/}；案例圖：docs/assets/。本報告整合自原 vlm_lora_finetune.md。</p>
+
+<h2 id="deploy">8 · 部署：VLM 作為 AgentBot 的 Brain</h2>
+<div class="card">
+<h3>概覽</h3>
+<p>產物 A（<code>Cosmos-Reason2-2B-lora-merged</code>）可作為 <code>agentbot</code> 編排系統的「Brain」獨立部署。
+FastAPI 伺服器將 VLM 包成 <b>OpenAI 相容的 <code>/v1/chat/completions</code> 端點</b>，支援 <code>tools</code> 參數與 <code>tool_calls</code> 回應——
+<code>agentbot</code> 的 <code>Gr00tVLMClient</code> 直接消費這個介面，不需要任何橋接層。</p>
+<h3>啟動方式</h3>
+<div class="formula">
+# 設定合併後模型路徑，啟動 uvicorn<br>
+VLM_MODEL_DIR=&lt;path-to-Cosmos-Reason2-2B-lora-merged&gt; \<br>
+&nbsp;&nbsp;uv run uvicorn vlm_lora.serve.openai_app:app --host 0.0.0.0 --port 8000<br>
+<br>
+# 或使用便利包裝腳本（從 configs/default.yaml 讀取路徑）<br>
+bash examples/run_vlm_server.sh
+</div>
+</div>
+
+<div class="card">
+<h3>FastAPI OpenAI tool-calling 合約（request → response）</h3>
+<p>Request（JSON body，含 <code>tools</code> 定義與多模態訊息）：</p>
+<div class="formula" style="font-size:12px">
+{<br>
+&nbsp;&nbsp;"model": "gr00t-vlm",<br>
+&nbsp;&nbsp;"messages": [<br>
+&nbsp;&nbsp;&nbsp;&nbsp;{"role": "user", "content": [<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,&lt;b64&gt;"}},<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{"type": "text", "text": "Sort the can onto the orange plate."}<br>
+&nbsp;&nbsp;&nbsp;&nbsp;]}<br>
+&nbsp;&nbsp;],<br>
+&nbsp;&nbsp;"tools": [{"type": "function", "function": {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;"name": "sort_can",<br>
+&nbsp;&nbsp;&nbsp;&nbsp;"description": "Pick and place a can onto the specified plate.",<br>
+&nbsp;&nbsp;&nbsp;&nbsp;"parameters": {"type": "object",<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"properties": {"target_color": {"type": "string"}},<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"required": ["target_color"]}<br>
+&nbsp;&nbsp;}}],<br>
+&nbsp;&nbsp;"tool_choice": "auto"<br>
+}
+</div>
+<p style="margin-top:12px">Response（OpenAI <code>tool_calls</code> 格式）：</p>
+<div class="formula" style="font-size:12px">
+{<br>
+&nbsp;&nbsp;"choices": [{"message": {<br>
+&nbsp;&nbsp;&nbsp;&nbsp;"role": "assistant",<br>
+&nbsp;&nbsp;&nbsp;&nbsp;"content": null,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;"tool_calls": [{"id": "call_0", "type": "function",<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"function": {"name": "sort_can",<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"arguments": "{\"target_color\": \"orange\"}"}<br>
+&nbsp;&nbsp;&nbsp;&nbsp;}]<br>
+&nbsp;&nbsp;}}]<br>
+}
+</div>
+</div>
+
+<div class="card">
+<h3><code>&lt;tool_call&gt;</code> 原始格式與解析</h3>
+<p>VLM 原生輸出帶有標籤的純文字 token，伺服器端 post-process 將其解析成標準 OpenAI 結構：</p>
+<div class="formula">
+&lt;tool_call&gt;{"name": "sort_can", "arguments": {"target_color": "orange"}}&lt;/tool_call&gt;
+</div>
+<p>解析邏輯：以正則抽出 <code>&lt;tool_call&gt;…&lt;/tool_call&gt;</code> 標籤內容 → <code>json.loads</code> → 組成 OpenAI <code>tool_calls</code> list。
+若模型產生多個連續 <code>&lt;tool_call&gt;</code> 標籤，每個都會被解析為獨立的 <code>tool_calls</code> 項目（對應多步規劃）。</p>
+</div>
+
+<div class="card">
+<h3>VQA → tool-calling 能力差距與兩階段解法</h3>
+<p>產物 A 的 LoRA 是對 <b>VQA 資料</b>（7 種問答類型）微調——這提升了<b>領域視覺理解</b>，但沒有訓練過「給定技能清單、輸出結構化 <code>&lt;tool_call&gt;</code>」的能力。這造成 <b>VQA → tool-calling 能力差距</b>：模型懂圖像，但不一定知道如何輸出正確的工具呼叫格式。</p>
+<table>
+<tr><th>階段</th><th>方法</th><th>目標</th><th>狀態</th></tr>
+<tr>
+  <td><span class="pill a">Phase 1 MVP</span></td>
+  <td>Prompt engineering：在 system prompt 中列出可用技能定義 + few-shot 範例，引導現有 VQA checkpoint 輸出 <code>&lt;tool_call&gt;</code></td>
+  <td>立即可用；驗證端到端流程</td>
+  <td style="color:var(--acc2)">✅ 已實作</td>
+</tr>
+<tr>
+  <td><span class="pill c">Phase 2 LoRA</span></td>
+  <td>Tool-calling LoRA：在 agentbot 真實技能的 <code>instruction+image → &lt;tool_call&gt;</code> 資料上再次 LoRA 微調，讓格式可靠且參數化</td>
+  <td>穩定的 tool-calling；多步規劃</td>
+  <td style="color:var(--acc3)">◻ 待實作</td>
+</tr>
+</table>
+<p class="mut">Tool-calling LoRA 訓練資料集：以 agentbot 的 5 個內建技能（<code>sort_can / pick / place / home / pour_water</code>）自動生成 <code>{instruction, image, tool_call}</code> 三元組，格式與 VQA LoRA 相同、僅更換 answer 格式。</p>
+</div>
+
+<div class="card">
+<h3><code>SkillCall</code> schema 與 agentbot 整合</h3>
+<p><code>Gr00tVLMClient.complete()</code> 接收 VLM 回應後，將 <code>tool_calls[0].function</code> 解析為 <code>SkillCall</code>（Pydantic model）：</p>
+<div class="formula" style="font-size:12px">
+# agentbot/contracts.py<br>
+class SkillCall(BaseModel):<br>
+&nbsp;&nbsp;skill: str&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;# tool_calls[0].function.name<br>
+&nbsp;&nbsp;args: dict[str, Any]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;# json.loads(tool_calls[0].function.arguments)<br>
+&nbsp;&nbsp;rationale: str = ""&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;# from content (if any) before tool_call
+</div>
+<p>相機影像進入 Brain 的完整路徑：<code>CAMERA</code> 事件 → <code>Monitor.ingest()</code> → <code>state["camera"]</code> → <code>Brain.step()</code> 讀取 state 組成多模態訊息 → POST <code>/v1/chat/completions</code>（含 <code>image_url</code> content part）。</p>
+<p>agentbot 端設定（<code>agentbot/configs/</code>）：</p>
+<div class="formula" style="font-size:12px">
+vlm:<br>
+&nbsp;&nbsp;backend: gr00t-vlm<br>
+&nbsp;&nbsp;base_url: http://&lt;server-host&gt;:8000
+</div>
+</div>
 
 <script>
 const STATS={"Spatial":300,"Attribute":600,"Temporal":333,"Trajectory":333,"Summary":334,"Reasoning":299,"Mechanics":300};

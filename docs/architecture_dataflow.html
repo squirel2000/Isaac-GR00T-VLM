@@ -6,7 +6,7 @@
 <title>Isaac-GR00T-VLM · Architecture &amp; Dataflow</title>
 <style>
   :root{--bg:#f6f8fb;--panel:#ffffff;--ink:#1b2733;--mut:#5b6b7b;--line:#d8e0ea;
-        --gen:#2f8f5b;--vlm:#2563eb;--vla:#d97706;--eval:#7c3aed;--shadow:0 1px 3px rgba(20,40,70,.08);}
+        --gen:#2f8f5b;--vlm:#2563eb;--vla:#d97706;--eval:#7c3aed;--deploy:#be123c;--shadow:0 1px 3px rgba(20,40,70,.08);}
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);
        font:15px/1.6 -apple-system,"Segoe UI","Microsoft JhengHei",system-ui,sans-serif}
@@ -33,9 +33,10 @@
   <span><i class="sw" style="background:var(--vlm)"></i>VLM LoRA (Product A)</span>
   <span><i class="sw" style="background:var(--vla)"></i>VLA weight swap (Product B)</span>
   <span><i class="sw" style="background:var(--eval)"></i>Evaluation</span>
+  <span><i class="sw" style="background:var(--deploy)"></i>Deployment (AgentBot Brain)</span>
 </div>
 
-<svg viewBox="0 0 1020 470" width="100%" role="img" aria-label="end-to-end architecture and dataflow">
+<svg viewBox="0 0 1020 620" width="100%" role="img" aria-label="end-to-end architecture and dataflow">
  <defs>
    <marker id="mk" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto">
      <path d="M0,0 L7,3 L0,6 Z" fill="#90a2b5"/></marker>
@@ -43,7 +44,7 @@
      .box{fill:#fff;stroke:#cdd8e5;rx:11}
      .t{fill:#1b2733;font:600 13px 'Segoe UI',sans-serif}
      .s{fill:#5b6b7b;font:11px 'Segoe UI',sans-serif}
-     .edge{stroke:#b9c6d5;stroke-width:1.6;fill:none;marker-end:url(#mk)}
+     .edge{stroke:#b9c6d5;stroke-width:1.6;fill:none;marker-end:url(#mk);stroke-linejoin:round;stroke-linecap:round}
      .dot{r:4}
    </style>
  </defs>
@@ -82,20 +83,20 @@
  <rect class="box" x="480" y="392" width="220" height="56" style="stroke:#7c3aed"/>
  <text class="t" x="494" y="414">VLA open-loop eval</text><text class="s" x="494" y="432">action MSE / MAE</text>
 
- <!-- edges -->
- <path class="edge" id="e1" d="M170,60 L230,60"/>
- <path class="edge" id="e2" d="M400,60 L460,40"/>
- <path class="edge" id="e2b" d="M400,60 L460,84"/>
- <path class="edge" id="e3" d="M660,40 L720,58"/>
- <path class="edge" id="e3b" d="M660,84 L720,62"/>
- <path class="edge" id="e4" d="M805,90 L805,150"/>            <!-- VQA -> LoRA train (data) -->
- <path class="edge" id="e5" d="M720,181 L660,181"/>           <!-- Cosmos-R2 -> LoRA -->
- <path class="edge" id="e6" d="M470,181 L425,181"/>           <!-- LoRA -> Product A -->
- <path class="edge" id="e7" d="M325,214 C325,250 230,250 200,278"/> <!-- A -> swap -->
- <path class="edge" id="e8" d="M200,301 L245,301"/>           <!-- VLA -> swap -->
- <path class="edge" id="e9" d="M435,301 L480,301"/>           <!-- swap -> Product B -->
- <path class="edge" id="e10" d="M300,214 C300,360 340,360 345,392"/> <!-- A -> VLM eval -->
- <path class="edge" id="e11" d="M575,332 L580,392"/>          <!-- B -> VLA eval -->
+ <!-- edges (orthogonal, rounded corners, routed around blocks) -->
+ <path class="edge" id="e1" d="M170,60 H230"/>                <!-- OpenArm -> Frame sampling -->
+ <path class="edge" id="e2" d="M400,60 H420 Q430,60 430,50 V48 Q430,38 440,38 H460"/>   <!-- Frame -> Template Q&A -->
+ <path class="edge" id="e2b" d="M400,60 H420 Q430,60 430,70 V74 Q430,84 440,84 H460"/>  <!-- Frame -> Teacher-VLM -->
+ <path class="edge" id="e3" d="M660,38 H700 Q710,38 710,48 V50 Q710,60 720,60"/>        <!-- Template Q&A -> VQA -->
+ <path class="edge" id="e3b" d="M660,84 H700 Q710,84 710,74 V70 Q710,60 720,60"/>       <!-- Teacher-VLM -> VQA -->
+ <path class="edge" id="e4" d="M805,90 V150"/>               <!-- VQA -> LoRA train (data) -->
+ <path class="edge" id="e5" d="M720,181 H660"/>              <!-- Cosmos-R2 -> LoRA -->
+ <path class="edge" id="e6" d="M470,181 H425"/>              <!-- LoRA -> Product A -->
+ <path class="edge" id="e7" d="M340,214 V270"/>              <!-- A -> swap_backbone -->
+ <path class="edge" id="e8" d="M200,301 H245"/>              <!-- VLA -> swap -->
+ <path class="edge" id="e9" d="M435,301 H480"/>              <!-- swap -> Product B -->
+ <path class="edge" id="e10" d="M250,214 V240 Q250,250 240,250 H218 Q208,250 208,260 V360 Q208,370 218,370 H300 Q310,370 310,380 V392"/> <!-- A -> VLM eval (around swap_backbone via left lane) -->
+ <path class="edge" id="e11" d="M580,332 V392"/>            <!-- B -> VLA eval -->
 
  <!-- animated flow dots -->
  <circle class="dot" fill="#2f8f5b"><animateMotion dur="1.6s" repeatCount="indefinite"><mpath href="#e1"/></animateMotion></circle>
@@ -108,6 +109,54 @@
  <circle class="dot" fill="#d97706"><animateMotion dur="1.4s" repeatCount="indefinite"><mpath href="#e9"/></animateMotion></circle>
  <circle class="dot" fill="#7c3aed"><animateMotion dur="2.0s" repeatCount="indefinite"><mpath href="#e10"/></animateMotion></circle>
  <circle class="dot" fill="#7c3aed"><animateMotion dur="1.6s" repeatCount="indefinite"><mpath href="#e11"/></animateMotion></circle>
+
+ <!-- row 5: deployment lane (AgentBot Brain) -->
+ <!-- separator label -->
+ <text x="10" y="504" style="fill:#be123c;font:700 11px 'Segoe UI',sans-serif;letter-spacing:.5px">DEPLOYMENT · AgentBot Brain</text>
+ <line x1="10" y1="508" x2="1010" y2="508" style="stroke:#be123c;stroke-width:.8;stroke-dasharray:4 3;opacity:.45"/>
+
+ <!-- nodes -->
+ <rect class="box" x="20"  y="518" width="170" height="62" style="stroke:#be123c"/>
+ <text class="t" x="34"  y="542">instruction + image</text><text class="s" x="34"  y="560">+ robot state</text>
+
+ <rect class="box" x="240" y="518" width="210" height="62" style="stroke:#be123c"/>
+ <text class="t" x="254" y="538">VLM /v1/chat/completions</text>
+ <text class="s" x="254" y="556">FastAPI · tools param</text>
+ <text class="s" x="254" y="571">vlm_lora.serve.openai_app</text>
+
+ <rect class="box" x="500" y="518" width="170" height="62" style="stroke:#be123c"/>
+ <text class="t" x="514" y="542">tool_calls</text>
+ <text class="s" x="514" y="560">SkillCall (Pydantic)</text>
+
+ <rect class="box" x="720" y="518" width="130" height="28" style="stroke:#be123c"/>
+ <text class="t" x="734" y="537">AgentBot Brain</text>
+
+ <rect class="box" x="720" y="556" width="130" height="28" style="stroke:#d97706"/>
+ <text class="t" x="734" y="575">Skill executor</text>
+
+ <rect class="box" x="900" y="518" width="110" height="62" style="stroke:#d97706"/>
+ <text class="t" x="914" y="542">VLA rollout</text>
+ <text class="s" x="914" y="560">(GR00T N1.7)</text>
+
+ <!-- edges (orthogonal, rounded corners) -->
+ <path class="edge" id="d1" d="M190,549 H240"/>             <!-- instruction -> VLM serve -->
+ <path class="edge" id="d2" d="M450,549 H500"/>             <!-- VLM serve -> tool_calls -->
+ <path class="edge" id="d3" d="M670,542 H720"/>            <!-- tool_calls -> AgentBot Brain -->
+ <path class="edge" id="d3b" d="M670,556 H720"/>           <!-- tool_calls -> Skill executor -->
+ <path class="edge" id="d4" d="M850,535 H900"/>            <!-- AgentBot Brain -> VLA rollout -->
+ <path class="edge" id="d5" d="M850,567 H900"/>            <!-- Skill executor -> VLA rollout -->
+
+ <!-- Product A feeds into the VLM serve node (routed down left lane, around swap_backbone & VLM eval) -->
+ <path class="edge" id="d0" d="M270,214 V240 Q270,250 260,250 H232 Q222,250 222,260 V480 Q222,490 232,490 H290 Q300,490 300,500 V518" style="stroke:#2563eb;stroke-dasharray:5 3"/>
+
+ <!-- animated dots for deployment lane -->
+ <circle class="dot" fill="#be123c"><animateMotion dur="1.5s" repeatCount="indefinite"><mpath href="#d1"/></animateMotion></circle>
+ <circle class="dot" fill="#be123c"><animateMotion dur="1.5s" repeatCount="indefinite"><mpath href="#d2"/></animateMotion></circle>
+ <circle class="dot" fill="#be123c"><animateMotion dur="1.4s" repeatCount="indefinite"><mpath href="#d3"/></animateMotion></circle>
+ <circle class="dot" fill="#d97706"><animateMotion dur="1.4s" repeatCount="indefinite"><mpath href="#d3b"/></animateMotion></circle>
+ <circle class="dot" fill="#d97706"><animateMotion dur="1.4s" repeatCount="indefinite"><mpath href="#d4"/></animateMotion></circle>
+ <circle class="dot" fill="#d97706"><animateMotion dur="1.4s" repeatCount="indefinite"><mpath href="#d5"/></animateMotion></circle>
+ <circle class="dot" fill="#2563eb"><animateMotion dur="2.2s" repeatCount="indefinite"><mpath href="#d0"/></animateMotion></circle>
 </svg>
 </div>
 

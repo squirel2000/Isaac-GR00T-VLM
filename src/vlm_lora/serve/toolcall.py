@@ -4,9 +4,6 @@ parse the model's <tool_call>{...}</tool_call> output back into call dicts."""
 from __future__ import annotations
 
 import json
-import re
-
-_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 
 
 def build_tool_system(tools: list[dict]) -> str:
@@ -46,13 +43,35 @@ def split_text_and_images(message: dict) -> tuple[str, list[str]]:
 
 
 def parse_tool_calls(text: str) -> list[dict]:
-    """Extract every <tool_call>{json}</tool_call> block as {name, arguments}."""
+    """Extract every <tool_call> ... </tool_call> block as {name, arguments}.
+    Tolerant: the closing </tool_call> may be missing (some models omit it), and the JSON
+    object is located by brace-matching so nested `arguments` objects parse correctly."""
     out = []
-    for m in _TOOL_CALL_RE.finditer(text):
+    i = 0
+    while True:
+        s = text.find("<tool_call>", i)
+        if s == -1:
+            break
+        j = text.find("{", s)
+        if j == -1:
+            break
+        depth, end = 0, -1
+        for k in range(j, len(text)):
+            if text[k] == "{":
+                depth += 1
+            elif text[k] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = k + 1
+                    break
+        if end == -1:
+            break
         try:
-            obj = json.loads(m.group(1))
+            obj = json.loads(text[j:end])
         except json.JSONDecodeError:
+            i = s + len("<tool_call>")
             continue
         if isinstance(obj, dict) and "name" in obj:
             out.append({"name": obj["name"], "arguments": obj.get("arguments", {}) or {}})
+        i = end
     return out
