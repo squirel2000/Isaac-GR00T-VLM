@@ -1,3 +1,5 @@
+> 繁體中文版（置於 agentbot）：agentbot/docs/plans/2026-06-21-vlm-brain-agentbot-integration.zh-Hant.md
+
 # VLM Brain ⇄ AgentBot Integration Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.

@@ -100,8 +100,8 @@
 <tr><td>影像來源</td><td>場景影格（相機/解析度）</td><td>OpenArm 單相機 480×640，從 mp4 抽首/中/尾幀</td></tr>
 <tr><td>問答格式</td><td>單輪 image+Q→A / 多輪；中/英</td><td>單輪、英文、JSONL（<code>images / type / messages</code>）</td></tr>
 <tr><td>題型分佈</td><td>對齊評測類別</td><td>7 類：Attribute/Mechanics/Reasoning/Spatial/Summary/Temporal/Trajectory</td></tr>
-<tr><td>規模</td><td>問答對數</td><td>2,499 對（2,250 train / 249 val），300 影格</td></tr>
-<tr><td>標註方式</td><td>人工 / 大模型生成 / template</td><td>template（規則）+ teacher-VLM（Qwen3-VL-30B-A3B）自動生成</td></tr>
+<tr><td>規模</td><td>問答對數</td><td>依 episode 數而定；每集 6 幀（6 動作階段 × 1 幀）</td></tr>
+<tr><td>標註方式</td><td>人工 / 大模型生成 / template</td><td>template（規則）+ teacher-VLM（Qwen3-VL-8B-Instruct，dense，4090 可跑）自動生成；6 個動作階段：approach / grasp / pick / move_to_plate / place / retract</td></tr>
 <tr><td>品質控管</td><td>格式驗證、抽檢</td><td>JSON 解析過濾、type 白名單、與 dense 8B 對照抽檢</td></tr>
 </table>
 <div class="note">教學重點：自動生成可快速擴量，但 teacher 可能幻覺/籠統（見專案報告 §4 的 8B vs 30B-A3B 對照）。實務上常以 template 保底 + teacher 增廣 + 少量人工校正。</div>
@@ -153,6 +153,66 @@
 <p class="mut">影像+問答多模態；凍結 vision、LoRA 調 LLM；label-mask 只對答案算 loss；指標：VQA 準確率（按題型）+ 置換進 VLA 後的 action MSE/MAE。完整數字見專案報告 §6。</p></div>
 <div class="card"><h3>案例 B — 純 LLM LoRA（對照）</h3>
 <p class="mut">純文字指令微調（如客服/領域問答）：無 vision/projector、無 image token；資料是純文字對話；指標多為文字準確率/BLEU/人評。相同點：凍結底座、低秩 A·B、label-mask 答案、bf16+grad-ckpt。相異點：VLM 多了視覺編碼、image-token 對齊與更長序列/顯存壓力。</p></div>
+</div>
+
+<h2>6 · 本專案腳本逐一說明（fine-tune / eval pipeline）</h2>
+<table>
+<tr><th>腳本</th><th>作用</th><th>關鍵 API</th></tr>
+<tr>
+  <td><code>gen_vqa_from_lerobot.py</code></td>
+  <td>從 LeRobot v2 影片依 6 個動作階段（approach / grasp / pick / move_to_plate / place / retract）各抽 1 幀，使用 teacher VLM 生成 VQA JSONL；輸出 <code>data.train.jsonl</code>、<code>data.val.jsonl</code>、<code>images/</code>、<code>stats.json</code></td>
+  <td><code>AutoModelForImageTextToText</code>、<code>AutoProcessor</code>、<code>cv2.VideoCapture</code></td>
+</tr>
+<tr>
+  <td><code>vqa_dataset.py</code></td>
+  <td>JSONL → PyTorch <code>Dataset</code> + <code>Collator</code>；將 <code>&lt;image&gt;</code> 佔位字串轉換為結構化 content（<code>[{type:image}, …]</code>），以正確觸發 image token 展開；label masking 將 prompt/影像 token 設為 <code>IGNORE_INDEX=-100</code>，只對 assistant 答案 token 計算 loss</td>
+  <td><code>processor.apply_chat_template</code>、<code>IGNORE_INDEX=-100</code></td>
+</tr>
+<tr>
+  <td><code>lora_args.py</code></td>
+  <td>定義 LoRA 超參數（<code>lora_r</code>、<code>lora_alpha</code>、<code>lora_dropout</code>）與 target 模組（<code>llm</code> 模式：q/k/v/o/gate/up/down proj，可選額外掛 vision encoder）；構建 <code>peft.LoraConfig</code></td>
+  <td><code>peft.LoraConfig(task_type="CAUSAL_LM")</code></td>
+</tr>
+<tr>
+  <td><code>train_vlm_lora.py</code></td>
+  <td>標準 HF SFT 流程：載入底座 → <code>get_peft_model</code> 插入 LoRA → <code>Trainer.train</code>；訓練結束後儲存 adapter 與 processor</td>
+  <td><code>Qwen3VLForConditionalGeneration</code>、<code>Trainer</code>、<code>TrainingArguments</code>、<code>get_peft_model</code></td>
+</tr>
+<tr>
+  <td><code>merge_lora.py</code></td>
+  <td>將 LoRA adapter 併回底座權重，輸出獨立可推論的 VLM（Product A）；使用 <code>safe_serialization=True</code> 以 safetensors 格式儲存</td>
+  <td><code>PeftModel.merge_and_unload()</code></td>
+</tr>
+<tr>
+  <td><code>swap_backbone.py</code></td>
+  <td>純 safetensors 操作：將 Product A 的 <code>backbone.model.*</code> 鍵值置換回現有 VLA checkpoint，以 VLA 端的 backbone key 逐一到 merged 對應取值（兩邊都有且形狀相符才置換，merged 多出的層自動略過），保留 action head 不動；輸出「置換後 VLA」（Product B）</td>
+  <td><code>safetensors.torch.load_file</code>、<code>safetensors.torch.save_file</code>（key 交集 swap）</td>
+</tr>
+<tr>
+  <td><code>eval_vlm_vqa.py</code></td>
+  <td>對 VLM checkpoint 執行 VQA 準確率評測：按 <code>type</code> 欄位分類統計，答案正規化後做子字串匹配；輸出 per-type 與 Overall 準確率 JSON</td>
+  <td><code>model.generate</code>、<code>processor.batch_decode</code>、正規化子字串比對</td>
+</tr>
+<tr>
+  <td><code>eval_toolcall.py</code></td>
+  <td>評測 tool-calling 輸出：解析預測文字與 gold，計算 valid-parse、skills-in-vocab、name-sequence、args-exact 四項指標；使用 <code>ToolCallVLM</code>（來自 <code>serve/model.py</code>）在 GPU 上推論</td>
+  <td><code>parse_tool_calls</code>、<code>ToolCallVLM.complete</code></td>
+</tr>
+<tr>
+  <td><code>infer_vlm.py</code></td>
+  <td>單張影像 + 問題的快速推論腳本（Product A 獨立使用，無 GR00T dependency）；命令列直接呼叫</td>
+  <td><code>Qwen3VLForConditionalGeneration</code>、<code>AutoProcessor</code>、<code>model.generate</code></td>
+</tr>
+<tr>
+  <td><code>serve/model.py</code></td>
+  <td>封裝 <code>ToolCallVLM</code> 類別：載入 merged VLM 一次並重複使用；解析 OpenAI 格式的 multimodal <code>image_url</code>（data-URI 或路徑），插入 tool-describing system prompt，回傳 <code>{text, calls}</code></td>
+  <td><code>Qwen3VLForConditionalGeneration</code>、<code>build_tool_system</code>、<code>parse_tool_calls</code>（FastAPI 層在 <code>serve/openai_app.py</code>）</td>
+</tr>
+</table>
+<div class="note">
+<b>train_vlm_lora.py 是 transformers 標準 SFT 流程嗎？與 GR00T N1.7 訓練有何不同？</b><br>
+<code>train_vlm_lora.py</code> 是 transformers 標準 SFT 流程（<code>AutoProcessor</code> + <code>Qwen3VLForConditionalGeneration</code> + <code>peft.get_peft_model</code> + <code>Trainer</code> / <code>TrainingArguments</code>），但<b>綁定 Qwen3-VL 類別與其 proj 名稱</b>；換 VLM 家族需改 <code>AutoModelForImageTextToText</code> 子類與 LoRA target 模組名稱。<br><br>
+與 GR00T N1.7 訓練<b>本質不同</b>——後者使用 GR00T 自家 trainer，訓練對象是整個 VLA（backbone + action adapter + DiT），loss 為 flow-matching action loss，非 HF <code>Trainer</code>、非 CausalLM token loss。本流程只訓練 VLM 的語言理解能力（VQA），action head 完全獨立，最終透過 <code>swap_backbone.py</code> 以 safetensors 鍵值置換的方式注入 VLA。
 </div>
 
 <p class="mut" style="margin-top:30px;border-top:1px solid var(--line);padding-top:12px">搭配閱讀：<code>docs/project_report.html</code>（本專案的結果與三方產物）。</p>

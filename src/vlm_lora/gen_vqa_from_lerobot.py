@@ -18,6 +18,30 @@ import tyro
 _COLORS = ["orange", "green", "red", "blue", "yellow", "white", "black"]
 _TYPES = ["Attribute", "Mechanics", "Reasoning", "Spatial", "Summary", "Temporal", "Trajectory"]
 
+# Six distinct manipulation phases of the can-sort episode, in temporal order.
+_PHASES = ("approach", "grasp", "pick", "move_to_plate", "place", "retract")
+_PHASE_FRACS = {
+    "approach": 0.12, "grasp": 0.30, "pick": 0.45,
+    "move_to_plate": 0.62, "place": 0.80, "retract": 0.96,
+}
+_PHASE_ORDER = {p: i for i, p in enumerate(_PHASES)}
+
+# phase_mode=False (legacy _sample_frames) yields early/mid/late; map them to
+# representative phases so template_qa_pairs computes correct progress flags.
+_LEGACY_PHASE_ALIAS = {"early": "approach", "mid": "pick", "late": "place"}
+
+
+def _sample_phase_frames(length: int, phases: tuple[str, ...] = _PHASES) -> list[tuple[int, str]]:
+    """Map each named manipulation phase to one representative frame index."""
+    if length <= 0:
+        return []
+    out = []
+    for ph in phases:
+        frac = _PHASE_FRACS.get(ph, 0.5)
+        idx = min(length - 1, max(0, int(frac * (length - 1))))
+        out.append((idx, ph))
+    return out
+
 
 def parse_target_color(task: str) -> str | None:
     for c in _COLORS:
@@ -26,32 +50,58 @@ def parse_target_color(task: str) -> str | None:
     return None
 
 
+_NEXT = {
+    "approach": "Reach toward the can and prepare to grasp it.",
+    "grasp": "Close the dexterous hand around the can.",
+    "pick": "Lift the can off the table.",
+    "move_to_plate": "Carry the can toward the {color} plate.",
+    "place": "Lower and release the can onto the {color} plate.",
+    "retract": "Withdraw the arm back to its home pose.",
+}
+
+
+def _next_action_answer(phase: str, color: str) -> str:
+    return _NEXT.get(phase, "Continue the task.").format(color=color)
+
+
 def template_qa_pairs(task: str, phase: str) -> list[dict]:
+    phase = _LEGACY_PHASE_ALIAS.get(phase, phase)
     color = parse_target_color(task) or "target"
-    done = phase == "late"
+    i = _PHASE_ORDER.get(phase, 0)
+    grasped = i >= _PHASE_ORDER["grasp"]
+    placed = i >= _PHASE_ORDER["place"]
+    moving = _PHASE_ORDER["pick"] <= i < _PHASE_ORDER["place"]
+    phase_human = phase.replace("_", " ")
     return [
-        {
-            "type": "Summary",
-            "question": "What is the dual-arm robot doing in this scene?",
-            "answer": f"The robot is performing a can-sorting task: {task}.",
-        },
-        {
-            "type": "Trajectory",
-            "question": "On which plate will the can be placed?",
-            "answer": f"On the {color} plate.",
-        },
-        {
-            "type": "Attribute",
-            "question": "What is the color of the target plate?",
-            "answer": f"The target plate is {color}.",
-        },
-        {
-            "type": "Temporal",
-            "question": "Has the can already been placed on the plate?",
-            "answer": "Yes, the can has been placed."
-            if done
-            else "No, the robot is still moving the can.",
-        },
+        {"type": "Summary",
+         "question": "What is the dual-arm robot doing in this scene?",
+         "answer": f"The robot is performing a can-sorting task: {task}."},
+        {"type": "Trajectory",
+         "question": "On which plate will the can be placed?",
+         "answer": f"On the {color} plate."},
+        {"type": "Attribute",
+         "question": "What is the color of the target plate?",
+         "answer": f"The target plate is {color}."},
+        {"type": "Temporal",
+         "question": "Which stage is shown: approach, grasp, pick, move, place, or retract?",
+         "answer": f"The {phase_human} stage."},
+        {"type": "Temporal",
+         "question": "Has the can already been placed on the plate?",
+         "answer": "Yes, the can has been placed." if placed
+                   else "No, the can has not been placed yet."},
+        {"type": "Mechanics",
+         "question": "Is the dexterous hand currently holding the can?",
+         "answer": ("No, the can has been released." if placed
+                    else "Yes, the hand is grasping the can." if grasped
+                    else "No, the hand has not grasped the can yet.")},
+        {"type": "Reasoning",
+         "question": "What should the robot do next?",
+         "answer": _next_action_answer(phase, color)},
+        {"type": "Spatial",
+         "question": "Where is the can relative to the target plate?",
+         "answer": ("The can is resting on the plate." if placed
+                    else "The can is being carried toward the plate." if moving
+                    else "The can is in front of the robot, away from the plate.")},
     ]
 
 
@@ -88,10 +138,11 @@ def _extract_frame(video_path: str, frame_index: int):
 
 
 _TEACHER_PROMPT = (
-    "This is a robot manipulation scene. Task: '{task}'. Generate 4 diverse question/answer "
-    "pairs about this image covering varied types among: {types}. Keep answers short and "
-    "grounded in what is visible. Reply ONLY as a JSON list of objects with keys "
-    "type, question, answer."
+    "This is a robot manipulation scene. Task: '{task}'. This frame is captured during the "
+    "'{phase}' stage of a can-sorting episode (stages in order: approach, grasp, pick, "
+    "move_to_plate, place, retract). Generate 4 diverse question/answer pairs about THIS image "
+    "covering varied types among: {types}. Keep answers short and grounded in what is visible. "
+    "Reply ONLY as a JSON list of objects with keys type, question, answer."
 )
 
 
@@ -115,10 +166,10 @@ class TeacherVLM:
             mid, trust_remote_code=True, device_map="auto", dtype=td
         ).eval()
 
-    def generate_qa(self, image, task: str, max_new_tokens: int = 512) -> list[dict]:
+    def generate_qa(self, image, task: str, phase: str, max_new_tokens: int = 512) -> list[dict]:
         import torch
 
-        prompt = _TEACHER_PROMPT.format(task=task, types=", ".join(_TYPES))
+        prompt = _TEACHER_PROMPT.format(task=task, phase=phase, types=", ".join(_TYPES))
         msgs = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": prompt}]}]
         text = self.processor.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
         inputs = self.processor(text=[text], images=[image], return_tensors="pt").to(self.model.device)
@@ -140,9 +191,10 @@ def generate(
     num_episodes: int = 100,
     frames_per_episode: int = 3,
     val_ratio: float = 0.1,
-    teacher_model: str | None = "Qwen/Qwen3-VL-30B-A3B-Instruct",
+    teacher_model: str | None = "Qwen/Qwen3-VL-8B-Instruct",
     teacher_dtype: str = "bfloat16",
     use_template: bool = True,
+    phase_mode: bool = True,
     max_new_tokens: int = 512,
     seed: int = 42,
 ) -> None:
@@ -172,15 +224,20 @@ def generate(
             ei, task, length = ep["episode_index"], ep["task"], ep["length"]
             if not os.path.exists(vpat.format(ei)):
                 continue
-            for fidx, phase in _sample_frames(length, frames_per_episode):
+            frames = (
+                _sample_phase_frames(length)
+                if phase_mode
+                else _sample_frames(length, frames_per_episode)
+            )
+            for fidx, phase in frames:
                 img = _extract_frame(vpat.format(ei), fidx)
                 if img is None:
                     continue
-                rel = f"images/ep{ei:06d}_f{fidx:06d}.png"
+                rel = f"images/ep{ei:06d}_f{fidx:06d}_{phase}.png"
                 img.save(os.path.join(out_dir, rel))
                 qas = template_qa_pairs(task, phase) if use_template else []
                 if teacher:
-                    qas += teacher.generate_qa(img, task, max_new_tokens)
+                    qas += teacher.generate_qa(img, task, phase, max_new_tokens)
                 for qa in qas:
                     out.write(
                         json.dumps(

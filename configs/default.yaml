@@ -8,13 +8,13 @@
 #   - FINE-TUNE uses: models.base_vlm + teacher_vlm, data.*, lora.*, train.*  (steps 1-2)
 #   - MERGE/SWAP uses: products.lora_tuned_vlm, products.swapped_vla, vla.baseline_ckpt (steps 3-4)
 #   - EVAL uses: data.lerobot_dataset (open-loop), artifacts.vqa/data.val.jsonl (VQA)  (step 5)
-#   H100 paths shown; local→H100 via `python scripts/common/pegasus.py run "<cmd>"`.
+#   H100 paths shown; local→H100 via `python scripts/common/pegasus.py run "<cmd>"`. (data.* updated to 4090-local paths 2026-06-23)
 # =============================================================================
 
 models:
-  base_vlm: nvidia/Cosmos-Reason2-2B            # gated -> uses local HF cache (resolve_model_path)
-  teacher_vlm: Qwen/Qwen3-VL-30B-A3B-Instruct   # VQA auto-gen teacher (MoE, ~31B/3B active)
-  teacher_vlm_compare: Qwen/Qwen3-VL-8B-Instruct # dense baseline for the teacher comparison
+  base_vlm: nvidia/Cosmos-Reason2-2B
+  teacher_vlm: Qwen/Qwen3-VL-8B-Instruct      # 4090: dense 8B (~17GB) — 30B-A3B MoE does NOT fit
+  teacher_vlm_fallback: Qwen/Qwen3-VL-4B-Instruct  # already cached, ~9GB
 
 remote:
   repo: /data/VLA/tingying/IsaacLab-GR00T/Isaac-GR00T-VLM   # this repo on H100 (now nested under IsaacLab-GR00T)
@@ -24,10 +24,10 @@ remote:
   gr00t_ckpts: /data/VLA/tingying/IsaacLab-GR00T/artifacts/checkpoints/gr00t
 
 data:
-  lerobot_dataset: /data/VLA/datasets/OpenArm_CanSorting_MultiTask_dataset_O6_0403
-  vqa_out: artifacts/vqa
-  num_episodes: 100
-  frames_per_episode: 3
+  lerobot_dataset: /home/asus/Gits/IsaacLab-GR00T/datasets/OpenArm_CanSorting_MultiTask_Sim_dataset_O6_0403
+  vqa_out: artifacts/vqa_6phase
+  num_episodes: 150
+  phase_mode: true            # six action phases (approach…retract) per episode
   val_ratio: 0.1
 
 # --- Product locations (canonical, under IsaacLab-GR00T/artifacts/checkpoints/gr00t) ---
@@ -45,7 +45,7 @@ vla:
 artifacts:
   base_snapshot: artifacts/Cosmos-Reason2-2B-base   # pre-finetune VLM reference
   adapter: artifacts/cosmos_r2_lora                 # trained PEFT adapter (pre-merge)
-  vqa: artifacts/vqa                                # generated VQA dataset
+  vqa: artifacts/vqa_6phase                         # generated VQA dataset
   eval: artifacts/eval                              # eval plots / metrics
 
 lora:
