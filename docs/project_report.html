@@ -42,7 +42,7 @@
 <p><span class="tag">Cosmos-Reason2-2B (Qwen3-VL)</span> <span class="tag">PEFT LoRA r=16</span>
    <span class="tag">teacher: Qwen3-VL-30B-A3B (MoE)</span> <span class="tag">OpenArm O6</span></p>
 <p class="toc"><a href="#arch">架構</a><a href="#prod">產物與路徑</a><a href="#vqa">VQA 資料集</a><a href="#ft">微調流程</a><a href="#eval">評估與 MSE/MAE</a><a href="#case">案例分析</a><a href="#cmp">Teacher 比較</a><a href="#concl">結論</a><a href="#ops">附錄</a><a href="#deploy">§8 部署</a></p>
-<p class="mut">完整動畫架構圖（light theme，獨立檔）：<code>docs/architecture_dataflow.html</code>。一般概念（LoRA/MoE/多模態）：<code>docs/llm_vlm_finetuning_guide.html</code>。</p>
+<p class="mut">端到端訓練與部署資料流見本報告 §1 與 §8（已整合原獨立檔 <code>architecture_dataflow.html</code>）。一般概念（LoRA / MoE / 多模態）：<code>docs/llm_vlm_finetuning_guide.html</code>。</p>
 
 <h2 id="arch">1 · 架構與資料流（動畫）</h2>
 <div class="card">
@@ -374,6 +374,29 @@ VLM_MODEL_DIR=&lt;path-to-Cosmos-Reason2-2B-lora-merged&gt; \<br>
 # 或使用便利包裝腳本（從 configs/default.yaml 讀取路徑）<br>
 bash examples/run_vlm_server.sh
 </div>
+</div>
+
+<div class="card">
+<h3>部署資料流（動畫）：產物 A 作為 AgentBot Brain</h3>
+<svg viewBox="0 0 980 132" width="100%" class="flow" role="img" aria-label="deployment dataflow">
+ <title>Deployment dataflow: instruction → VLM serve → tool_calls → AgentBot Brain → VLA rollout</title>
+ <defs><marker id="ard" markerWidth="7" markerHeight="7" refX="6" refY="2.6" orient="auto"><path d="M0,0 L6,2.6 L0,5.2 Z" fill="#ff7b72"/></marker>
+ <style>.nd{fill:#1f2832;stroke:#2b3947}.ed{stroke:#3a4a5a;stroke-width:1.6;fill:none;marker-end:url(#ard)}</style></defs>
+ <rect class="nd" x="8" y="40" width="168" height="54" rx="9"/><text class="nt" x="20" y="64">instruction + image</text><text class="ns" x="20" y="82">+ robot state</text>
+ <rect class="nd" x="208" y="40" width="174" height="54" rx="9" style="stroke:#7ee787"/><text class="nt" x="220" y="64">VLM /v1/chat（產物 A）</text><text class="ns" x="220" y="82">openai_app · tools 參數</text>
+ <rect class="nd" x="414" y="40" width="156" height="54" rx="9"/><text class="nt" x="426" y="64">tool_calls</text><text class="ns" x="426" y="82">SkillCall (Pydantic)</text>
+ <rect class="nd" x="602" y="40" width="158" height="54" rx="9"/><text class="nt" x="614" y="64">AgentBot Brain</text><text class="ns" x="614" y="82">orchestrator · skill</text>
+ <rect class="nd" x="792" y="40" width="180" height="54" rx="9" style="stroke:#ffa657"/><text class="nt" x="804" y="64">VLA rollout</text><text class="ns" x="804" y="82">GR00T N1.7 · IsaacLab</text>
+ <path class="ed" id="dp1" d="M176,67 L208,67"/>
+ <path class="ed" id="dp2" d="M382,67 L414,67"/>
+ <path class="ed" id="dp3" d="M570,67 L602,67"/>
+ <path class="ed" id="dp4" d="M760,67 L792,67"/>
+ <circle class="dot" fill="#ff7b72"><animateMotion dur="1.5s" repeatCount="indefinite"><mpath href="#dp1"/></animateMotion></circle>
+ <circle class="dot" fill="#ff7b72"><animateMotion dur="1.5s" repeatCount="indefinite"><mpath href="#dp2"/></animateMotion></circle>
+ <circle class="dot" fill="#7ee787"><animateMotion dur="1.5s" repeatCount="indefinite"><mpath href="#dp3"/></animateMotion></circle>
+ <circle class="dot" fill="#ffa657"><animateMotion dur="1.5s" repeatCount="indefinite"><mpath href="#dp4"/></animateMotion></circle>
+</svg>
+<p class="mut">產物 A 以 OpenAI 相容 <code>/v1/chat/completions</code> 提供服務；<code>agentbot</code> 的 <code>Gr00tVLMClient</code> 取回 <code>tool_calls</code> → 解析為 <code>SkillCall</code> → Orchestrator 派工 → GR00T N1.7 在 IsaacLab 跑一集。完整合約見下方，端到端操作見 <code>agentbot/docs/USING_VLM_BRAIN.md</code>。</p>
 </div>
 
 <div class="card">

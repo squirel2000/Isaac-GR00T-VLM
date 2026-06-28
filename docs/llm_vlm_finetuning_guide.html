@@ -3,14 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LLM 與 VLM 微調指南（含 LoRA / MoE / 多模態）</title>
+<title>LLM 與 VLM 微調技術報告（LoRA / 多模態 / MoE / weight-swap）</title>
 <style>
   :root{--bg:#0f1419;--panel:#171e26;--panel2:#1f2832;--ink:#e6edf3;--mut:#9fb0c0;
         --acc:#4cc2ff;--acc2:#7ee787;--acc3:#ffa657;--acc4:#d2a8ff;--line:#2b3947;}
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 -apple-system,"Segoe UI","Microsoft JhengHei",system-ui,sans-serif}
   .wrap{max-width:1040px;margin:0 auto;padding:32px 22px 80px}
-  h1{font-size:26px}h2{font-size:20px;margin:1.8em 0 .5em;border-left:4px solid var(--acc);padding-left:10px}
+  .doc-head{border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:8px}
+  h1{font-size:27px;margin:.1em 0}
+  h2{font-size:20px;margin:1.9em 0 .5em;border-left:4px solid var(--acc);padding-left:10px;scroll-margin-top:14px}
   h3{font-size:16px;color:var(--acc2);margin:1.2em 0 .4em}
   .mut{color:var(--mut)}code{background:#0b0f14;color:var(--acc3);padding:1px 6px;border-radius:5px;font-size:13px}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0}
@@ -19,114 +21,166 @@
   th{background:var(--panel2);color:var(--acc)}
   .note{border-left:3px solid var(--acc3);background:rgba(255,166,87,.07);padding:8px 12px;border-radius:0 8px 8px 0}
   .tag{display:inline-block;font-size:11px;padding:1px 8px;border-radius:20px;border:1px solid var(--line);color:var(--mut)}
+  .toc{font-size:13.5px;margin:10px 0 2px}.toc a{color:var(--acc);text-decoration:none;margin-right:16px;white-space:nowrap}
+  .qa{margin:10px 0}.qa dt{font-weight:600;color:var(--acc);margin:14px 0 4px}
+  .qa dt .n{display:inline-block;min-width:1.6em;color:var(--mut);font-weight:400}
+  .qa dd{margin:0 0 2px 1.6em}
+  figure{margin:0}figcaption{color:var(--mut);font-size:12.5px;margin-top:2px}
 </style>
 </head>
 <body><div class="wrap">
 
-<h1>LLM 與 VLM 微調指南</h1>
-<p class="mut">從一般大型語言模型（LLM）到視覺語言模型（VLM）的微調方法、挑戰與解法；以本專案（Cosmos-Reason2-2B VQA LoRA）為實例。含動畫資料流圖。</p>
+<header class="doc-head">
+<h1>LLM 與 VLM 微調技術報告</h1>
+<p class="mut">從大型語言模型（LLM）到視覺語言模型（VLM）的微調方法、多模態挑戰與解法，並以本專案
+<b>Cosmos-Reason2-2B VQA LoRA → 合併 → 置換回 GR00T N1.7</b> 為實例。各章附動畫資料流圖；技術問答統一收於附錄 A。</p>
+<p><span class="tag">Cosmos-Reason2-2B (Qwen3-VL)</span> <span class="tag">PEFT LoRA r=16</span>
+   <span class="tag">多模態 VQA SFT</span> <span class="tag">weight-swap 置換 backbone</span></p>
+<nav class="toc">
+  <a href="#s1">1 · 模型關係</a><a href="#s2">2 · LLM 微調方法</a><a href="#s3">3 · VLM 微調</a>
+  <a href="#s4">4 · VQA 資料集</a><a href="#s5">5 · Dense vs MoE</a><a href="#s6">6 · 本專案腳本</a><a href="#sA">附錄 A · 技術問答</a>
+</nav>
+</header>
 
-<h2>0 · 本專案精準結論：Cosmos-R2 / GR00T N1.7 / LoRA / swap</h2>
-<div class="note">
-本節依目前 checkout 實際程式碼與 checkpoint 檢查結果整理：<code>checkpoint-150000/config.json</code> 為 <code>select_layer=16</code>、<code>vl_self_attention_cfg.num_layers=4</code>、<code>diffusion_model_cfg.num_layers=32</code>；VLA safetensors 內有 <code>backbone.model.*</code> 493 個 tensor、<code>action_head.*</code> 537 個 tensor，其中 <code>action_head.vlln.*</code> 2 個、<code>action_head.vl_self_attention.*</code> 64 個；VLA 的 LLM layers 實際只有 <code>0..15</code>。merged 6phase VLM 則是 <code>Qwen3VLForConditionalGeneration</code>，單一 <code>model.safetensors</code>，LLM layers <code>0..27</code>。
-</div>
-
+<!-- ============================================================= 1 -->
+<h2 id="s1">1 · 模型關係：獨立 VLM、VLA、LoRA 合併與 swap</h2>
+<p class="mut">本專案不修改 GR00T N1.7 的訓練流程，而是「<b>獨立載入完整 Cosmos-R2 → LoRA SFT → 合併（產物 A）→ 把 <code>backbone.model.*</code> 權重置換回 VLA</b>」。下圖為兩條獨立堆疊：上方是可單獨部署的 VLM，下方是 GR00T VLA（backbone + action head）。</p>
 <div class="card">
-<h3>完整關係圖：獨立 VLM、VLA、LoRA merge、swap</h3>
-<svg viewBox="0 0 1040 430" width="100%">
+<figure>
+<svg viewBox="0 0 1040 360" width="100%" role="img" aria-label="model relationship: standalone VLM, VLA, LoRA merge and swap">
+ <title>獨立 VLM（產物 A）與 GR00T VLA 的關係，及 LoRA 合併與 backbone 置換路徑</title>
  <defs>
-  <marker id="qa" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4cc2ff"/></marker>
+  <marker id="r1" markerWidth="7" markerHeight="7" refX="6" refY="2.6" orient="auto"><path d="M0,0 L6,2.6 L0,5.2 Z" fill="#4cc2ff"/></marker>
+  <marker id="r1g" markerWidth="7" markerHeight="7" refX="6" refY="2.6" orient="auto"><path d="M0,0 L6,2.6 L0,5.2 Z" fill="#7ee787"/></marker>
+  <marker id="r1o" markerWidth="7" markerHeight="7" refX="6" refY="2.6" orient="auto"><path d="M0,0 L6,2.6 L0,5.2 Z" fill="#ffa657"/></marker>
   <style>
-   .box{fill:#1f2832;stroke:#2b3947}.v{fill:#102334;stroke:#4cc2ff}.h{fill:#241c13;stroke:#ffa657}.g{fill:#13261a;stroke:#7ee787}.p{fill:#261b33;stroke:#d2a8ff}
-   .tt{fill:#e6edf3;font:600 13px 'Segoe UI'}.ss{fill:#9fb0c0;font:11px 'Segoe UI'}.aa{fill:#ffa657;font:10.5px 'Segoe UI'}
-   .arr{stroke:#4cc2ff;stroke-width:2.4;fill:none;marker-end:url(#qa)}
-   .dash{stroke:#7ee787;stroke-width:2.4;fill:none;stroke-dasharray:7 8;marker-end:url(#qa)}
+   .box{fill:#1f2832;stroke:#2b3947}.v{fill:#102334;stroke:#4cc2ff}.h{fill:#241c13;stroke:#ffa657}.g{fill:#13261a;stroke:#7ee787}
+   .tt{fill:#e6edf3;font:600 13px 'Segoe UI'}.ss{fill:#9fb0c0;font:11px 'Segoe UI'}
+   .arr{stroke:#3a4a5a;stroke-width:1.6;fill:none;marker-end:url(#r1)}
+   .dashg{stroke:#7ee787;stroke-width:1.6;fill:none;stroke-dasharray:6 6;marker-end:url(#r1g)}
+   .swap{stroke:#ffa657;stroke-width:1.6;fill:none;stroke-dasharray:6 6;marker-end:url(#r1o)}
   </style>
  </defs>
- <text class="tt" x="20" y="26">A. 獨立 VLM：Cosmos-Reason2-2B / Product A</text>
- <rect class="box" x="20" y="48" width="116" height="56" rx="8"/><text class="tt" x="35" y="75">image + text</text><text class="ss" x="35" y="92">chat template</text>
- <path class="arr" d="M136,76 H174"/>
- <rect class="v" x="174" y="48" width="128" height="56" rx="8"/><text class="tt" x="190" y="73">Vision encoder</text><text class="ss" x="190" y="91">visual / ViT</text>
- <path class="arr" d="M302,76 H340"/>
- <rect class="v" x="340" y="48" width="128" height="56" rx="8"/><text class="tt" x="359" y="73">Projector</text><text class="ss" x="359" y="91">image token 對齊</text>
- <path class="arr" d="M468,76 H506"/>
- <rect class="v" x="506" y="48" width="202" height="56" rx="8"/><text class="tt" x="524" y="73">Qwen3 language_model</text><text class="ss" x="524" y="91">完整 28 層：0..27</text>
- <path class="arr" d="M708,76 H746"/>
- <rect class="box" x="746" y="48" width="126" height="56" rx="8"/><text class="tt" x="765" y="73">lm_head</text><text class="ss" x="765" y="91">文字答案 / VQA</text>
 
- <rect class="g" x="506" y="126" width="202" height="48" rx="8"/><text class="tt" x="523" y="149">LoRA adapter</text><text class="ss" x="523" y="166">q/k/v/o + gate/up/down</text>
- <path class="dash" d="M606,126 V104"/>
- <rect class="g" x="746" y="126" width="126" height="48" rx="8"/><text class="tt" x="766" y="149">merge</text><text class="ss" x="766" y="166">W' = W + ΔW</text>
- <path class="dash" d="M708,150 H746"/>
+ <text class="tt" x="16" y="24">A · 獨立 VLM：Cosmos-Reason2-2B（產物 A）</text>
+ <rect class="box" x="16" y="42" width="120" height="52" rx="8"/><text class="tt" x="30" y="68">image + text</text><text class="ss" x="30" y="85">chat template</text>
+ <path class="arr" d="M136,68 H172"/>
+ <rect class="v" x="172" y="42" width="128" height="52" rx="8"/><text class="tt" x="187" y="68">Vision encoder</text><text class="ss" x="187" y="85">visual / ViT</text>
+ <path class="arr" d="M300,68 H336"/>
+ <rect class="v" x="336" y="42" width="120" height="52" rx="8"/><text class="tt" x="351" y="68">Projector</text><text class="ss" x="351" y="85">image token 對齊</text>
+ <path class="arr" d="M456,68 H492"/>
+ <rect class="v" x="492" y="42" width="206" height="52" rx="8"/><text class="tt" x="508" y="68">Qwen3 language_model</text><text class="ss" x="508" y="85">完整 28 層：0..27</text>
+ <path class="arr" d="M698,68 H734"/>
+ <rect class="box" x="734" y="42" width="120" height="52" rx="8"/><text class="tt" x="749" y="68">lm_head</text><text class="ss" x="749" y="85">文字答案 · VQA</text>
 
- <text class="tt" x="20" y="226">B. GR00T N1.7 VLA checkpoint：backbone + action head</text>
- <rect class="box" x="20" y="248" width="116" height="58" rx="8"/><text class="tt" x="41" y="275">robot obs</text><text class="ss" x="36" y="292">image/state/text</text>
- <path class="arr" d="M136,277 H174"/>
- <rect class="v" x="174" y="248" width="246" height="58" rx="8"/><text class="tt" x="192" y="273">backbone.model.* = VLM backbone</text><text class="ss" x="192" y="291">vision + embeddings + LLM 0..15 only</text>
- <path class="arr" d="M420,277 H458"/>
- <rect class="h" x="458" y="248" width="106" height="58" rx="8"/><text class="tt" x="481" y="273">vlln</text><text class="ss" x="476" y="291">LayerNorm 2048</text>
- <path class="arr" d="M564,277 H602"/>
- <rect class="h" x="602" y="248" width="138" height="58" rx="8"/><text class="tt" x="616" y="273">vl_self_attention</text><text class="ss" x="616" y="291">4-layer adapter</text>
- <path class="arr" d="M740,277 H778"/>
- <rect class="h" x="778" y="248" width="124" height="58" rx="8"/><text class="tt" x="817" y="273">DiT</text><text class="ss" x="800" y="291">32 層 action model</text>
- <path class="arr" d="M902,277 H946"/>
- <rect class="box" x="946" y="248" width="74" height="58" rx="8"/><text class="tt" x="960" y="273">action</text><text class="ss" x="958" y="291">26 dim</text>
+ <rect class="g" x="492" y="120" width="206" height="46" rx="8"/><text class="tt" x="508" y="143">LoRA adapter</text><text class="ss" x="508" y="159">q/k/v/o + gate/up/down</text>
+ <path class="dashg" d="M595,120 V96"/>
+ <rect class="g" x="734" y="120" width="120" height="46" rx="8"/><text class="tt" x="749" y="143">merge</text><text class="ss" x="749" y="159">W' = W + ΔW → A</text>
+ <path class="dashg" d="M698,143 H734"/>
 
- <path class="dash" d="M607,174 C607,210 296,210 296,248"/>
- <text class="aa" x="336" y="214">swap_backbone：只用 VLA 端存在的 backbone key 交集複製；action_head.* 不動</text>
- <rect class="p" x="174" y="338" width="728" height="54" rx="8"/><text class="tt" x="193" y="362">為什麼 LLM 第 16–27 層的 delta 會丟棄？</text><text class="ss" x="193" y="380">因 VLA checkpoint 只有 layers 0..15 的目的 key；swap 以 VLA key 為主迴圈，merged VLM 多出的 16..27 層沒有位置可寫入。</text>
+ <text class="tt" x="16" y="212">B · GR00T N1.7 VLA：backbone（VLM）+ action head</text>
+ <rect class="box" x="16" y="230" width="120" height="54" rx="8"/><text class="tt" x="30" y="254">robot obs</text><text class="ss" x="30" y="271">image · state · text</text>
+ <path class="arr" d="M136,257 H172"/>
+ <rect class="v" x="172" y="230" width="244" height="54" rx="8"/><text class="tt" x="187" y="254">backbone.model.* ＝ VLM backbone</text><text class="ss" x="187" y="271">vision + embeds + LLM 0..15 only</text>
+ <path class="arr" d="M416,257 H452"/>
+ <rect class="h" x="452" y="230" width="100" height="54" rx="8"/><text class="tt" x="467" y="254">vlln</text><text class="ss" x="467" y="271">LayerNorm 2048</text>
+ <path class="arr" d="M552,257 H588"/>
+ <rect class="h" x="588" y="230" width="132" height="54" rx="8"/><text class="tt" x="602" y="254">vl_self_attention</text><text class="ss" x="602" y="271">4-layer adapter</text>
+ <path class="arr" d="M720,257 H756"/>
+ <rect class="h" x="756" y="230" width="118" height="54" rx="8"/><text class="tt" x="771" y="254">DiT</text><text class="ss" x="771" y="271">32 層 action model</text>
+ <path class="arr" d="M874,257 H910"/>
+ <rect class="box" x="910" y="230" width="114" height="54" rx="8"/><text class="tt" x="924" y="254">action</text><text class="ss" x="924" y="271">26 dim</text>
+
+ <path class="swap" d="M794,166 V189 Q794,196 787,196 H301 Q294,196 294,203 V230"/>
+ <text class="ss" x="360" y="186" fill="#ffa657">swap_backbone（只換 backbone.model.* 交集）</text>
 </svg>
+<figcaption>圖 1 · 上：獨立 VLM（藍）以 LoRA（綠）微調後合併為產物 A；下：VLA 的 backbone 被產物 A 置換（橘色虛線），action head 保留不動。</figcaption>
+</figure>
+</div>
+<div class="note">
+依目前 checkout 的程式碼與 checkpoint 實測：<code>checkpoint-150000/config.json</code> 為 <code>select_layer=16</code>、<code>vl_self_attention_cfg.num_layers=4</code>、<code>diffusion_model_cfg.num_layers=32</code>；VLA safetensors 內 <code>backbone.model.*</code> 493 個 tensor、<code>action_head.*</code> 537 個（含 <code>vlln</code> 2、<code>vl_self_attention</code> 64），VLA 的 LLM 實際只有 layers <code>0..15</code>。合併後的產物 A 是單一 <code>model.safetensors</code> 的 <code>Qwen3VLForConditionalGeneration</code>，LLM layers <code>0..27</code>。各名詞與層數歸屬詳見附錄 A。
 </div>
 
-<h3>逐題精準回答</h3>
+<!-- ============================================================= 2 -->
+<h2 id="s2">2 · LLM 微調：方法總覽</h2>
 <table>
-<tr><th>#</th><th>問題</th><th>答案</th></tr>
-<tr>
-<td>1</td>
-<td><code>vlln</code> 是什麼？<code>vl_self_attention</code> 算 VLM 或 DiT？</td>
-<td><code>vlln</code> 是 <b>Vision-Language LayerNorm</b> 的專案命名：在 <code>Gr00tN1d7ActionHead</code> 中實作為 <code>nn.LayerNorm(config.backbone_embedding_dim)</code>，本 checkpoint 是 LayerNorm(2048)。它不是 VLM backbone，而是 <code>action_head.vlln.*</code>。<br><br><code>vl_self_attention</code> 也不是 VLM backbone、也不是 DiT 本體；它是 action head 內、接在 vlln 後面的 <b>4 層 VL feature adapter</b>，key 前綴是 <code>action_head.vl_self_attention.*</code>。DiT 本體在 <code>action_head.model.*</code>，本 checkpoint 為 32 層。</td>
-</tr>
-<tr>
-<td>2</td>
-<td><code>Qwen3VLForConditionalGeneration</code> 是 transformers 公定格式嗎？</td>
-<td><b>不是跨所有 transformer/VLM 的公定類別名稱</b>；它是 Hugging Face Transformers 對 <b>Qwen3-VL 架構</b>提供的模型 class。公定/通用的是 HF 介面慣例：<code>PreTrainedModel</code>、<code>from_pretrained()</code>、<code>save_pretrained()</code>、<code>generate()</code>、<code>AutoProcessor</code>、以及較通用的 <code>AutoModelForImageTextToText</code>。換成 LLaVA、Idefics、Gemma、Mllama 等 VLM，通常會換成該家族自己的 class 或 AutoModel 對應類別。</td>
-</tr>
-<tr>
-<td>3</td>
-<td>為什麼程式碼預設 <code>select_layer=12</code>，但 checkpoint 是 16？</td>
-<td><code>configs/model/gr00t_n1d7.py</code> 的 12 只是 dataclass fallback/default。實際訓練與儲存 checkpoint 時，訓練 config 可以覆寫它。本例 <code>checkpoint-150000/config.json</code> 明確寫 <code>select_layer=16</code>，而 safetensors key 掃描也只看到 <code>backbone.model.model.language_model.layers.0..15</code>。所以「程式預設 12」不等於「所有訓練產物都用 12」；部署 checkpoint 以其保存的 <code>config.json</code> 為準。</td>
-</tr>
-<tr>
-<td>4</td>
-<td><code>train_vlm_lora.py</code> 是標準 transformers 流程嗎？所有 Qwen-VL 都能用嗎？其他架構怎麼做？</td>
-<td>它是標準 HF/PEFT SFT 配方的本專案實作：<code>AutoProcessor</code> + <code>Qwen3VLForConditionalGeneration</code> + <code>get_peft_model(LoraConfig)</code> + <code>Trainer</code>/<code>TrainingArguments</code>。但它<b>不是所有 VLM 零修改通用腳本</b>。目前程式碼綁定 Qwen3-VL class，LoRA target 也假設 Qwen 類模組名：<code>q_proj/k_proj/v_proj/o_proj/gate_proj/up_proj/down_proj</code>。<br><br>若是同樣 Qwen3-VL / Cosmos-Reason2-2B 相容架構，通常可直接用。若是其他架構，標準範本是：換成該模型的 <code>AutoModelForImageTextToText</code> 或專屬 class、確認 processor/chat template、重選 <code>target_modules</code>、保持 label masking 與 Trainer 流程。也就是「流程標準」，但「模型 class 與 target module 名稱要依架構調整」。</td>
-</tr>
-<tr>
-<td>5</td>
-<td>為什麼說第 16–27 層 delta 被丟棄？不能整個 28 層放回去嗎？</td>
-<td>獨立 Cosmos-R2 LoRA 的確是在完整 28 層 VLM 上訓練，merged VLM 也有 LLM layers <code>0..27</code>。但 GR00T N1.7 的 VLA backbone 在初始化時執行 <code>while len(language_model.layers) &gt; select_layer: pop(-1)</code>，本 checkpoint 的 <code>select_layer=16</code>，所以 VLA checkpoint 只存在 layers <code>0..15</code> 的目的 key。<br><br><code>swap_backbone.py</code> 是「以 VLA checkpoint 的 key 為主」逐一找 merged VLM 對應 tensor；VLA 沒有 layers 16–27 的 key，就沒有地方可寫。硬把 28 層都放進去會改變模型結構、forward 計算量、hidden-state 分佈，也會讓已訓練好的 action head 接到不同層語意的特徵；那不是 swap，而是要重建/重訓 VLA 設計。</td>
-</tr>
-<tr>
-<td>6</td>
-<td>為什麼需要 merge？底座是什麼？</td>
-<td>LoRA 訓練輸出的 <code>checkpoint-2000/adapter_model.safetensors</code> 只保存低秩 delta（A/B 矩陣），不是完整 VLM。<b>底座</b>就是原始 pretrained base model，例如 <code>nvidia/Cosmos-Reason2-2B</code>。<br><br>未 merge 時，推論需要「底座 + adapter」一起載入；merge 會把 <code>ΔW = B·A·scale</code> 寫回底座權重，輸出完整 standalone VLM（Product A）。這樣 Product A 可用普通 <code>Qwen3VLForConditionalGeneration.from_pretrained()</code> 載入，也可作為 <code>swap_backbone.py</code> 的來源。PEFT 官方也明確說 <code>merge_and_unload</code> 用於把 adapter layers 合併回 base model，以便當 standalone model 使用。</td>
-</tr>
-<tr>
-<td>7</td>
-<td>safetensors 就是 VLM 參數檔嗎？swap/merge 是針對此檔案置換嗎？</td>
-<td><code>.safetensors</code> 只是安全的 tensor 儲存格式，不自動等於「完整 VLM」。要看它所在目錄與 key：<br><br>• <code>Isaac-GR00T-VLM/artifacts/cosmos_r2_lora_6phase/checkpoint-2000/adapter_model.safetensors</code>：392 個 LoRA adapter tensor，key 如 <code>base_model.model.model.language_model.layers.0...lora_A/B.weight</code>，不是完整 VLM。<br>• <code>artifacts/checkpoints/gr00t/.../checkpoint-150000/model-00001-of-00003.safetensors</code> 等：GR00T VLA sharded checkpoint，含 <code>backbone.model.*</code> 與 <code>action_head.*</code>。<br>• merged Product A：<code>.../Cosmos-Reason2-2B-lora-merged-6phase/model.safetensors</code>，是完整 standalone VLM 權重。<br><br><code>merge_lora.py</code> 載入底座 + adapter，輸出新的 merged safetensors；<code>swap_backbone.py</code> 讀 VLA safetensors 與 merged VLM safetensors，只替換 VLA 中 <code>backbone.model.*</code> 且形狀相符的 tensor，再輸出新的 VLA safetensors。</td>
-</tr>
-<tr>
-<td>8</td>
-<td>「凍結 adapter/DiT 需要承受小幅 VL 特徵偏移」具體是什麼偏移？</td>
-<td>VLA action head 原本是用某個 backbone 特徵分佈訓練的：特徵張量形狀仍是 <code>[B, seq_len, 2048]</code>，但 swap 後，vision/embedding/LLM 前 16 層權重經 VQA LoRA 改過，會讓每個 token 的 hidden vector 數值分佈改變。例如：向量均值/方差、attention 後的 token 關係、物體/顏色/任務文字 token 的語意方向、不同層 feature scale 都可能小幅偏移。<br><br>由於 <code>action_head.vlln</code>、4 層 <code>vl_self_attention</code>、32 層 DiT、state/action encoders/decoder 都保持原權重，它們必須仍能把這批稍微改變的 VL features 映射到正確 action。若偏移小，open-loop action MSE/MAE 可能持平或改善；若偏移大，DiT 的 cross-attention 會讀到不同語意/尺度的條件特徵，動作誤差會上升。這就是 swap 後必須跑 VLA action eval 的原因。</td>
-</tr>
+<tr><th>方法</th><th>更新什麼</th><th>成本 / 顯存</th><th>適用</th></tr>
+<tr><td><b>Full fine-tune</b></td><td>全部權重</td><td>最高（需存全部梯度 + 優化器狀態）</td><td>資料多、要最大改變</td></tr>
+<tr><td><b>LoRA</b></td><td>凍結原權重，學低秩旁路 A·B</td><td>低（僅 ~0.1–1% 參數）</td><td>多數領域微調（本專案）</td></tr>
+<tr><td><b>QLoRA</b></td><td>4-bit 量化底座 + LoRA</td><td>最低（單卡可調大模型）</td><td>顯存受限</td></tr>
+<tr><td><b>Adapter</b></td><td>每層插入小瓶頸模組</td><td>低</td><td>多任務切換</td></tr>
+<tr><td><b>Prompt / Prefix tuning</b></td><td>只學軟提示向量</td><td>極低</td><td>輕量任務適配</td></tr>
 </table>
+<div class="card">
+<h3>LoRA 原理（動畫）：凍結 W，只學低秩 A·B</h3>
+<figure>
+<svg viewBox="0 0 720 200" width="100%" role="img" aria-label="LoRA: frozen W plus low-rank A times B">
+ <title>LoRA 旁路：凍結原權重 W，僅訓練低秩矩陣 A、B，輸出 h = Wx + B·A·x</title>
+ <defs><marker id="a1" markerWidth="7" markerHeight="7" refX="6" refY="2.6" orient="auto"><path d="M0,0 L6,2.6 L0,5.2 Z" fill="#4cc2ff"/></marker>
+ <marker id="a1g" markerWidth="7" markerHeight="7" refX="6" refY="2.6" orient="auto"><path d="M0,0 L6,2.6 L0,5.2 Z" fill="#7ee787"/></marker>
+ <style>.frozen{fill:#1f2832;stroke:#586675}.train{fill:#13261a;stroke:#7ee787}
+ .e{stroke:#3a4a5a;stroke-width:2;fill:none;marker-end:url(#a1)}.eg{stroke:#7ee787;stroke-width:2;fill:none;stroke-dasharray:6 7;marker-end:url(#a1g)}
+ .fl{stroke-dasharray:6 10;animation:d 1s linear infinite}@keyframes d{to{stroke-dashoffset:-32}}</style></defs>
+ <text x="22" y="105" fill="#9fb0c0" font-size="13">x</text>
+ <rect class="frozen" x="120" y="60" width="150" height="80" rx="8"/><text x="140" y="96" fill="#e6edf3" font-size="13">W（凍結）</text><text x="140" y="116" fill="#9fb0c0" font-size="11">原始預訓練權重</text>
+ <rect class="train" x="120" y="156" width="70" height="34" rx="6"/><text x="134" y="178" fill="#7ee787" font-size="12">A (r×d)</text>
+ <rect class="train" x="200" y="156" width="70" height="34" rx="6"/><text x="214" y="178" fill="#7ee787" font-size="12">B (d×r)</text>
+ <circle cx="430" cy="100" r="18" fill="#1f2832" stroke="#2b3947"/><text x="423" y="106" fill="#e6edf3" font-size="16">+</text>
+ <text x="470" y="105" fill="#9fb0c0" font-size="13">h = Wx + B·A·x</text>
+ <path class="e fl" d="M36,100 H120"/>
+ <path class="e fl" d="M270,100 H410"/>
+ <path class="eg fl" d="M36,104 V166 Q36,173 43,173 H120"/>
+ <path class="eg" d="M190,173 H200"/>
+ <path class="eg fl" d="M270,170 V107 Q270,100 277,100 H410"/>
+</svg>
+<figcaption>圖 2 · 主路徑 <b>W</b> 凍結（灰），僅低秩 <b style="color:var(--acc2)">A、B</b>（綠）可訓練。合併時 <code>W' = W + B·A</code>，得到與原模型同形狀的權重 → 可直接「置換」回原架構（本專案 swap 的基礎）。本專案：r=16、α=32、僅 0.81% 參數可訓練。</figcaption>
+</figure>
+</div>
+<h3>標準步驟</h3>
+<ol>
+<li><b>資料準備</b>：整理成指令／對話格式；切 train/val；定義標籤遮罩（只對「答案」算 loss）。</li>
+<li><b>選 target 模組</b>：LoRA 通常掛在注意力 q/k/v/o 與 MLP gate/up/down proj。</li>
+<li><b>超參數</b>：r（秩）、α（縮放）、dropout、lr（1e-4 常見）、batch × grad-accum、warmup、steps。</li>
+<li><b>訓練</b>：bf16 + gradient checkpointing 省顯存；監看 loss 與 grad_norm。</li>
+<li><b>評估</b>：held-out 準確率／任務指標；避免過擬合（小資料用小 r + 早停）。</li>
+</ol>
 
+<!-- ============================================================= 3 -->
+<h2 id="s3">3 · VLM 微調：多模態的特定挑戰與解法</h2>
+<div class="card">
+<h3>影像如何進入語言模型（動畫資料流）</h3>
+<figure>
+<svg viewBox="0 0 860 160" width="100%" role="img" aria-label="how image enters the language model">
+ <title>影像經 vision encoder 與 projector 投影為 image token，與文字 token 交錯後進入 LLM</title>
+ <defs><marker id="a2" markerWidth="7" markerHeight="7" refX="6" refY="2.6" orient="auto"><path d="M0,0 L6,2.6 L0,5.2 Z" fill="#4cc2ff"/></marker>
+ <style>.nd{fill:#1f2832;stroke:#2b3947}.e2{stroke:#3a4a5a;stroke-width:2;fill:none;marker-end:url(#a2);stroke-dasharray:6 10;animation:dd 1s linear infinite}@keyframes dd{to{stroke-dashoffset:-32}}</style></defs>
+ <rect class="nd" x="10" y="18" width="90" height="46" rx="9"/><text x="24" y="46" fill="#e6edf3" font-size="12">影像</text>
+ <rect class="nd" x="160" y="18" width="120" height="46" rx="9"/><text x="174" y="40" fill="#e6edf3" font-size="12">Vision Encoder</text><text x="174" y="57" fill="#9fb0c0" font-size="10">(ViT)</text>
+ <rect class="nd" x="340" y="18" width="110" height="46" rx="9"/><text x="354" y="40" fill="#e6edf3" font-size="12">Projector</text><text x="354" y="57" fill="#9fb0c0" font-size="10">對齊到文字空間</text>
+ <rect class="nd" x="10" y="100" width="90" height="46" rx="9"/><text x="24" y="128" fill="#e6edf3" font-size="12">文字 token</text>
+ <rect class="nd" x="520" y="58" width="150" height="46" rx="9" style="stroke:#d2a8ff"/><text x="534" y="80" fill="#e6edf3" font-size="12">LLM (Qwen3-VL)</text><text x="534" y="97" fill="#9fb0c0" font-size="10">交錯 image+text token</text>
+ <rect class="nd" x="730" y="58" width="110" height="46" rx="9"/><text x="744" y="86" fill="#e6edf3" font-size="12">答案 tokens</text>
+ <path class="e2" d="M100,41 H160"/>
+ <path class="e2" d="M280,41 H340"/>
+ <path class="e2" d="M450,41 H490 V69 Q490,72 495,72 H520"/>
+ <path class="e2" d="M100,123 H490 V90 Q490,87 495,87 H520"/>
+ <path class="e2" d="M670,81 H730"/>
+</svg>
+<figcaption>圖 3 · vision encoder → projector 把影像投影到 LLM embedding 空間；chat template 插入的 <code>&lt;image&gt;</code> 佔位展開為 N 個 image token，與文字 token 交錯送入 LLM。</figcaption>
+</figure>
+</div>
+<table>
+<tr><th>挑戰</th><th>解法（本專案採用）</th></tr>
+<tr><td>多模態對齊：影像特徵 vs 文字 token 空間</td><td>vision encoder → projector 投影到 LLM embedding；chat template 插入 <code>&lt;image&gt;</code> 佔位 → 展開為 N 個 image token</td></tr>
+<tr><td>image token 數與特徵數必須相符</td><td>content 用結構化 <code>[{type:image},{type:text}]</code>（非純字串），否則 token=0 vs features=N 報錯（本專案踩過此坑並修正）</td></tr>
+<tr><td>vision encoder 要不要微調？</td><td>多數 VQA LoRA 凍結 vision、只調 LLM 投影；省顯存又保留視覺泛化</td></tr>
+<tr><td>loss 設計</td><td><b>label masking</b>：只對 assistant 答案 token 算 loss（prompt／影像 token 設 -100）</td></tr>
+<tr><td>資料品質 / 多樣性</td><td>teacher-VLM 自動生成 + template 高信度骨幹 + 揭露多樣性侷限</td></tr>
+</table>
 <div class="card">
 <h3>標準 HF SFT 流程與本專案對照</h3>
 <table>
-<tr><th>標準步驟</th><th>HF/PEFT 常用 API</th><th>本專案檔案</th><th>注意事項</th></tr>
+<tr><th>標準步驟</th><th>HF / PEFT 常用 API</th><th>本專案檔案</th><th>注意事項</th></tr>
 <tr><td>載入 processor</td><td><code>AutoProcessor.from_pretrained</code></td><td><code>train_vlm_lora.py</code></td><td>VLM 必須使用對應 chat template，影像要用 structured content 觸發 image token。</td></tr>
 <tr><td>載入 base model</td><td><code>Qwen3VLForConditionalGeneration.from_pretrained</code> 或 <code>AutoModelForImageTextToText</code></td><td><code>train_vlm_lora.py</code></td><td>Qwen3-VL 用專屬 class；其他 VLM 改成該架構可載入的 class。</td></tr>
 <tr><td>建立 LoRA config</td><td><code>LoraConfig</code></td><td><code>lora_args.py</code></td><td>本例 target 是 Qwen LLM projections；其他模型需檢查 module names。</td></tr>
@@ -134,230 +188,164 @@
 <tr><td>準備 labels</td><td>labels + <code>-100</code> ignore mask</td><td><code>vqa_dataset.py</code></td><td>只對 assistant 答案 token 算 CausalLM loss。</td></tr>
 <tr><td>訓練</td><td><code>TrainingArguments</code> + <code>Trainer.train()</code></td><td><code>train_vlm_lora.py</code></td><td>Trainer 是外圈訓練迴圈；loss 由模型 forward 回傳。</td></tr>
 <tr><td>保存 adapter</td><td><code>model.save_pretrained</code></td><td><code>train_vlm_lora.py</code></td><td>checkpoint 內通常是 <code>adapter_model.safetensors</code>，不是完整底座。</td></tr>
-<tr><td>合併成 standalone</td><td><code>PeftModel.from_pretrained(...).merge_and_unload()</code></td><td><code>merge_lora.py</code></td><td>輸出 Product A，可單獨推論，也可作為 VLA swap 來源。</td></tr>
+<tr><td>合併成 standalone</td><td><code>PeftModel.from_pretrained(...).merge_and_unload()</code></td><td><code>merge_lora.py</code></td><td>輸出產物 A，可單獨推論，也可作為 VLA swap 來源。</td></tr>
 </table>
 <p class="mut">官方參考：Hugging Face <a href="https://huggingface.co/docs/transformers/main/model_doc/qwen3_vl">Qwen3-VL model docs</a>、<a href="https://huggingface.co/docs/transformers/main/tasks/image_text_to_text">Image-text-to-text / VLM docs</a>、<a href="https://huggingface.co/docs/transformers/main/en/training">Transformers fine-tuning with Trainer</a>、<a href="https://huggingface.co/docs/transformers/main/peft">Transformers PEFT integration</a>、PEFT <a href="https://huggingface.co/docs/peft/main/en/tutorial/peft_model_config">LoRA / PeftModel tutorial</a> 與 <a href="https://huggingface.co/docs/peft/main/package_reference/peft_model#peft.PeftModel.merge_and_unload">merge_and_unload API</a>。</p>
 </div>
 
-<h2>1 · LLM 微調：方法總覽</h2>
-<table>
-<tr><th>方法</th><th>更新什麼</th><th>成本/顯存</th><th>適用</th></tr>
-<tr><td><b>Full fine-tune</b></td><td>全部權重</td><td>最高（需存全部梯度+優化器狀態）</td><td>資料多、要最大改變</td></tr>
-<tr><td><b>LoRA</b></td><td>凍結原權重，學低秩旁路 A·B</td><td>低（僅 ~0.1–1% 參數）</td><td>多數領域微調（本專案）</td></tr>
-<tr><td><b>QLoRA</b></td><td>4-bit 量化底座 + LoRA</td><td>最低（單卡可調大模型）</td><td>顯存受限</td></tr>
-<tr><td><b>Adapter</b></td><td>每層插入小瓶頸模組</td><td>低</td><td>多任務切換</td></tr>
-<tr><td><b>Prompt / Prefix tuning</b></td><td>只學軟提示向量</td><td>極低</td><td>輕量任務適配</td></tr>
-</table>
-
-<div class="card">
-<h3>LoRA 原理（動畫）：凍結 W，只學低秩 A·B</h3>
-<svg viewBox="0 0 720 200" width="100%">
-  <defs><marker id="a1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4cc2ff"/></marker>
-  <style>.fl{stroke:#4cc2ff;stroke-width:2.5;fill:none;stroke-dasharray:6 10;animation:d 1s linear infinite}
-  @keyframes d{to{stroke-dashoffset:-32}}.frozen{fill:#1f2832;stroke:#586675}.train{fill:#13261a;stroke:#7ee787}</style></defs>
-  <text x="20" y="105" fill="#9fb0c0" font-size="13">x</text>
-  <rect class="frozen" x="120" y="60" width="150" height="80" rx="8"/><text x="140" y="95" fill="#e6edf3" font-size="13">W (凍結)</text><text x="140" y="115" fill="#9fb0c0" font-size="11">原始預訓練權重</text>
-  <rect class="train" x="120" y="155" width="70" height="34" rx="6"/><text x="134" y="177" fill="#7ee787" font-size="12">A (r×d)</text>
-  <rect class="train" x="200" y="155" width="70" height="34" rx="6"/><text x="214" y="177" fill="#7ee787" font-size="12">B (d×r)</text>
-  <circle cx="430" cy="100" r="18" fill="#1f2832" stroke="#2b3947"/><text x="423" y="105" fill="#e6edf3" font-size="16">+</text>
-  <text x="560" y="105" fill="#9fb0c0" font-size="13">h = Wx + B·A·x</text>
-  <path class="fl" d="M35,100 L120,100"/>
-  <path class="fl" d="M270,100 L412,100"/>
-  <path class="fl" style="stroke:#7ee787" d="M35,100 C70,100 70,172 120,172"/>
-  <path class="fl" style="stroke:#7ee787" d="M270,172 C300,172 360,110 412,104"/>
-  <path class="fl" d="M448,100 L555,100" marker-end="url(#a1)"/>
-</svg>
-<p class="mut">只有低秩 <b style="color:var(--acc2)">A、B</b>（綠）可訓練，原始 <b>W</b> 凍結。合併時 <code>W' = W + B·A</code>，得到與原模型同形狀的權重 → 可直接「置換」回原架構（本專案 swap 的基礎）。本專案：r=16, α=32, 僅 0.81% 參數可訓練。</p>
-</div>
-
-<h3>標準步驟</h3>
-<ol>
-<li><b>資料準備</b>：整理成指令/對話格式；切 train/val；定義標籤遮罩（只對「答案」算 loss）。</li>
-<li><b>選 target 模組</b>：LoRA 通常掛在注意力 q/k/v/o 與 MLP gate/up/down proj。</li>
-<li><b>超參數</b>：r（秩）、α（縮放）、dropout、lr（1e-4 常見）、batch×grad-accum、warmup、steps。</li>
-<li><b>訓練</b>：bf16 + gradient checkpointing 省顯存；監看 loss 與 grad_norm。</li>
-<li><b>評估</b>：held-out 準確率／任務指標；避免過擬合（小資料用小 r + 早停）。</li>
-</ol>
-
-<h2>2 · VLM 微調：多模態的特定挑戰與解法</h2>
-<div class="card">
-<h3>影像如何進入語言模型（動畫資料流）</h3>
-<svg viewBox="0 0 860 170" width="100%">
-  <defs><marker id="a2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4cc2ff"/></marker>
-  <style>.f2{stroke:#4cc2ff;stroke-width:2.5;fill:none;stroke-dasharray:6 10;animation:dd 1s linear infinite}@keyframes dd{to{stroke-dashoffset:-32}}
-  .nd{fill:#1f2832;stroke:#2b3947;rx:9}</style></defs>
-  <rect class="nd" x="10" y="20" width="90" height="46"/><text x="22" y="48" fill="#e6edf3" font-size="12">影像</text>
-  <rect class="nd" x="160" y="20" width="120" height="46"/><text x="172" y="42" fill="#e6edf3" font-size="12">Vision Encoder</text><text x="172" y="59" fill="#9fb0c0" font-size="10">(ViT)</text>
-  <rect class="nd" x="340" y="20" width="110" height="46"/><text x="352" y="42" fill="#e6edf3" font-size="12">Projector</text><text x="352" y="59" fill="#9fb0c0" font-size="10">對齊到文字空間</text>
-  <rect class="nd" x="10" y="104" width="90" height="46"/><text x="22" y="132" fill="#e6edf3" font-size="12">文字 token</text>
-  <rect class="nd" x="520" y="62" width="150" height="46" style="stroke:#d2a8ff"/><text x="532" y="84" fill="#e6edf3" font-size="12">LLM (Qwen3-VL)</text><text x="532" y="101" fill="#9fb0c0" font-size="10">交錯 image+text token</text>
-  <rect class="nd" x="730" y="62" width="110" height="46"/><text x="742" y="90" fill="#e6edf3" font-size="12">答案 tokens</text>
-  <path class="f2" d="M100,43 L160,43"/><path class="f2" d="M280,43 L340,43"/>
-  <path class="f2" d="M450,43 C485,43 490,80 520,84"/>
-  <path class="f2" d="M100,127 C300,127 360,100 520,92"/>
-  <path class="f2" d="M670,85 L730,85" marker-end="url(#a2)"/>
-</svg>
-</div>
-<table>
-<tr><th>挑戰</th><th>解法（本專案採用）</th></tr>
-<tr><td>多模態對齊：影像特徵 vs 文字 token 空間</td><td>vision encoder → projector 投影到 LLM embedding；chat template 插入 <code>&lt;image&gt;</code> 佔位 → 被展開為 N 個 image token</td></tr>
-<tr><td>image token 與特徵數必須相符</td><td>content 用結構化 <code>[{type:image},{type:text}]</code>（非純字串），否則 token=0 vs features=N 報錯（本專案踩過此坑並修正）</td></tr>
-<tr><td>vision encoder 要不要微調？</td><td>多數 VQA LoRA 凍結 vision、只調 LLM 投影；省顯存又保留視覺泛化</td></tr>
-<tr><td>loss 設計</td><td><b>label masking</b>：只對 assistant 答案 token 算 loss（prompt/影像 token 設 -100）</td></tr>
-<tr><td>資料品質/多樣性</td><td>teacher-VLM 自動生成 + template 高信度骨幹 + 揭露多樣性侷限</td></tr>
-</table>
-
-<h2>3 · VQA 資料集的構成（你問的細節）</h2>
+<!-- ============================================================= 4 -->
+<h2 id="s4">4 · VQA 資料集的構成</h2>
 <table>
 <tr><th>要素</th><th>說明</th><th>本專案</th></tr>
-<tr><td>影像來源</td><td>場景影格（相機/解析度）</td><td>OpenArm 單相機 480×640，從 mp4 依 6 個操作階段抽樣（approach / grasp / pick / move_to_plate / place / retract）</td></tr>
-<tr><td>問答格式</td><td>單輪 image+Q→A / 多輪；中/英</td><td>單輪、英文、JSONL（<code>images / type / messages</code>）</td></tr>
-<tr><td>題型分佈</td><td>對齊評測類別</td><td>7 類：Attribute/Mechanics/Reasoning/Spatial/Summary/Temporal/Trajectory</td></tr>
+<tr><td>影像來源</td><td>場景影格（相機 / 解析度）</td><td>OpenArm 單相機 480×640，從 mp4 依 6 個操作階段抽樣（approach / grasp / pick / move_to_plate / place / retract）</td></tr>
+<tr><td>問答格式</td><td>單輪 image+Q→A／多輪；中／英</td><td>單輪、英文、JSONL（<code>images / type / messages</code>）</td></tr>
+<tr><td>題型分佈</td><td>對齊評測類別</td><td>7 類：Attribute / Mechanics / Reasoning / Spatial / Summary / Temporal / Trajectory</td></tr>
 <tr><td>規模</td><td>問答對數</td><td>依 episode 數而定；每集 6 幀（6 動作階段 × 1 幀）</td></tr>
-<tr><td>標註方式</td><td>人工 / 大模型生成 / template</td><td>template（規則）+ teacher-VLM（Qwen3-VL-8B-Instruct，dense，4090 可跑）自動生成；6 個動作階段：approach / grasp / pick / move_to_plate / place / retract</td></tr>
+<tr><td>標註方式</td><td>人工／大模型生成／template</td><td>template（規則）+ teacher-VLM（Qwen3-VL-8B-Instruct，dense，4090 可跑）自動生成</td></tr>
 <tr><td>品質控管</td><td>格式驗證、抽檢</td><td>JSON 解析過濾、type 白名單、與 dense 8B 對照抽檢</td></tr>
 </table>
-<div class="note">教學重點：自動生成可快速擴量，但 teacher 可能幻覺/籠統（見專案報告 §4 的 8B vs 30B-A3B 對照）。實務上常以 template 保底 + teacher 增廣 + 少量人工校正。</div>
+<div class="note">自動生成可快速擴量，但 teacher 可能幻覺／籠統（見專案報告 §4 的 8B vs 30B-A3B 對照）。實務上常以 template 保底 + teacher 增廣 + 少量人工校正。題型覆蓋與時序／軌跡的重要性見附錄 A。</div>
 
-<h2>4 · Dense vs MoE（非 dense）</h2>
+<!-- ============================================================= 5 -->
+<h2 id="s5">5 · Dense vs MoE（非 dense）</h2>
 <div class="card">
 <h3>MoE 路由（動畫）：每 token 只啟動少數 expert</h3>
-<svg viewBox="0 0 720 190" width="100%">
-  <defs><marker id="a3" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4cc2ff"/></marker>
-  <style>.f3{stroke:#4cc2ff;stroke-width:2.5;fill:none;stroke-dasharray:6 10;animation:de 1s linear infinite}@keyframes de{to{stroke-dashoffset:-32}}
-  .on{fill:#13261a;stroke:#7ee787}.off{fill:#1f2832;stroke:#586675}
-  .blink{animation:bk 2s ease-in-out infinite}@keyframes bk{0%,40%{opacity:1}55%,100%{opacity:.35}}</style></defs>
-  <text x="14" y="100" fill="#9fb0c0" font-size="13">token</text>
-  <rect class="off" x="110" y="78" width="90" height="40" rx="8"/><text x="122" y="103" fill="#e6edf3" font-size="12">Router</text>
-  <g font-size="11" fill="#e6edf3">
-   <rect class="on blink" x="300" y="12" width="120" height="30" rx="6"/><text x="312" y="32">Expert 1 ✓</text>
-   <rect class="off" x="300" y="52" width="120" height="30" rx="6"/><text x="312" y="72">Expert 2</text>
-   <rect class="on blink" x="300" y="92" width="120" height="30" rx="6" style="animation-delay:.4s"/><text x="312" y="112">Expert 3 ✓</text>
-   <rect class="off" x="300" y="132" width="120" height="30" rx="6"/><text x="312" y="152">Expert N</text>
-  </g>
-  <circle cx="560" cy="100" r="16" fill="#1f2832" stroke="#2b3947"/><text x="553" y="105" fill="#e6edf3" font-size="14">Σ</text>
-  <text x="610" y="105" fill="#9fb0c0" font-size="12">輸出</text>
-  <path class="f3" d="M55,95 L110,95"/>
-  <path class="f3" style="stroke:#7ee787" d="M200,90 C250,60 260,30 300,27"/>
-  <path class="f3" style="stroke:#7ee787" d="M200,100 C250,107 260,107 300,107"/>
-  <path class="f3" style="stroke:#7ee787" d="M420,27 C470,40 500,90 544,98"/>
-  <path class="f3" style="stroke:#7ee787" d="M420,107 C470,105 500,102 544,100"/>
-  <path class="f3" d="M576,100 L608,100" marker-end="url(#a3)"/>
+<figure>
+<svg viewBox="0 0 720 196" width="100%" role="img" aria-label="MoE routing: router selects a few experts per token">
+ <title>MoE：router 為每個 token 選出 top-k expert，僅計算被選中的 expert 並加權合併</title>
+ <defs><marker id="a3" markerWidth="7" markerHeight="7" refX="6" refY="2.6" orient="auto"><path d="M0,0 L6,2.6 L0,5.2 Z" fill="#4cc2ff"/></marker>
+ <marker id="a3g" markerWidth="7" markerHeight="7" refX="6" refY="2.6" orient="auto"><path d="M0,0 L6,2.6 L0,5.2 Z" fill="#7ee787"/></marker>
+ <style>.on{fill:#13261a;stroke:#7ee787}.off{fill:#1f2832;stroke:#586675}
+ .e3{stroke:#3a4a5a;stroke-width:1.8;fill:none;marker-end:url(#a3)}.e3g{stroke:#7ee787;stroke-width:1.8;fill:none;marker-end:url(#a3g)}
+ .blink{animation:bk 2s ease-in-out infinite}@keyframes bk{0%,40%{opacity:1}55%,100%{opacity:.4}}</style></defs>
+ <text x="14" y="104" fill="#9fb0c0" font-size="13">token</text>
+ <rect class="off" x="96" y="84" width="92" height="40" rx="8"/><text x="110" y="109" fill="#e6edf3" font-size="12">Router</text>
+ <rect class="on blink" x="320" y="14" width="120" height="30" rx="6"/><text x="332" y="34" fill="#e6edf3" font-size="11">Expert 1 ✓</text>
+ <rect class="off" x="320" y="54" width="120" height="30" rx="6"/><text x="332" y="74" fill="#9fb0c0" font-size="11">Expert 2</text>
+ <rect class="on blink" x="320" y="94" width="120" height="30" rx="6" style="animation-delay:.4s"/><text x="332" y="114" fill="#e6edf3" font-size="11">Expert 3 ✓</text>
+ <rect class="off" x="320" y="134" width="120" height="30" rx="6"/><text x="332" y="154" fill="#9fb0c0" font-size="11">Expert N</text>
+ <circle cx="560" cy="104" r="16" fill="#1f2832" stroke="#2b3947"/><text x="553" y="109" fill="#e6edf3" font-size="14">Σ</text>
+ <text x="600" y="109" fill="#9fb0c0" font-size="12">輸出</text>
+ <path class="e3" d="M52,99 H96"/>
+ <path class="e3g" d="M188,99 H264 V29 H320"/>
+ <path class="e3g" d="M188,107 H264 V109 H320"/>
+ <path class="e3g" d="M440,29 H498 V104 H544"/>
+ <path class="e3g" d="M440,109 H498 V104 H544"/>
+ <path class="e3" d="M576,104 H600"/>
 </svg>
-<p class="mut">Router 為每個 token 挑選少數 expert（綠色啟動）。<b>Qwen3-VL-30B-A3B</b>：31B 總參數，每 token ~3B 啟動 → 算力像小模型、品質像大模型；但<b>全部 expert 都要載進顯存（~62GB）</b>。dense（8B）則每 token 走全部參數、~17GB、載入單純。</p>
+<figcaption>圖 4 · Router 為每個 token 挑選少數 expert（綠色啟動，走直線匯流排），加權合併後輸出；未選中的 expert 不計算 → 算力像小模型、容量像大模型。</figcaption>
+</figure>
 </div>
 <div class="card">
-<h3>MoE 深入：router、expert、協同運作（你問的）</h3>
+<h3>MoE 機制：router、expert、協同運作</h3>
 <table>
-<tr><th>問題</th><th>說明</th></tr>
-<tr><td>router 是內建組件嗎？</td><td><b>是</b>。每個 MoE 層內建一個 gating(router) 線性層，對每個 token 算出對各 expert 的分數(softmax)，選出 top-k。它與 expert 一起被訓練。</td></tr>
-<tr><td>expert 是什麼？</td><td>每個 expert 就是一個<b>獨立的前饋網路(FFN)</b>；同一層有 N 個並行 expert。訓練中各 expert 會自然特化到不同的輸入模式/領域。</td></tr>
-<tr><td>如何協同？</td><td>router 為每個 token 選 top-k expert → <b>只計算那 k 個</b> → 用 router 分數加權合併它們的輸出；其餘 expert 對該 token 不計算（這就是省算力的來源）。</td></tr>
-<tr><td>微調的作用/優勢</td><td>固定算力下提供更大的「總容量」(31B)，但每 token 僅 ~3B 參與計算 → 推論快、表達力強。代價：所有 expert 權重都須進顯存(~62GB)，且需 <code>Qwen3VLMoeForConditionalGeneration</code> 類別。</td></tr>
+<tr><th>組件 / 面向</th><th>說明</th></tr>
+<tr><td>Router（gating）</td><td>每個 MoE 層內建一個 gating 線性層，對每個 token 算出對各 expert 的分數（softmax）、選出 top-k；與 expert 一起訓練。</td></tr>
+<tr><td>Expert</td><td>每個 expert 是一個<b>獨立前饋網路（FFN）</b>；同層有 N 個並行 expert，訓練中自然特化到不同輸入模式／領域。</td></tr>
+<tr><td>協同運作</td><td>router 為每個 token 選 top-k → <b>只計算那 k 個</b> → 用 router 分數加權合併其輸出；其餘 expert 對該 token 不計算（省算力的來源）。</td></tr>
+<tr><td>容量 / 成本</td><td>固定算力下提供更大「總容量」。以 Qwen3-VL-30B-A3B 為例：31B 總參數、每 token ~3B 啟動 → 推論快、表達力強；代價是所有 expert 權重都須進顯存（~62 GB），且需 <code>Qwen3VLMoeForConditionalGeneration</code> 類別。dense 8B 則每 token 走全部參數、~17 GB、載入單純。</td></tr>
 </table>
-<p><span style="color:var(--acc);font-weight:600">為何 30B-A3B 答案比 8B 簡短/籠統？</span> 這<b>非 MoE 本質</b>。主因：(1) 兩模型的 instruction-tuning 風格不同(30B 偏精簡)；(2) 都用 greedy 解碼(<code>do_sample=False</code>)；(3) 我們只比了 3 影格，樣本小、屬軼事級觀察。不能推論「MoE 就比較籠統」。</p>
-<p><span style="color:var(--acc);font-weight:600">8B 每影格固定 4 題是模型限制嗎？</span> <b>不是</b>。是我的 prompt 要求「generate 4 diverse QA pairs」；8B 嚴格照辦，30B 有時多給(3–7 題)。題數由 prompt 決定，非模型規範。</p>
-<p><span style="color:var(--acc);font-weight:600">若缺 Summary / Temporal / Trajectory 會怎樣？</span> 這三類分別測「場景整體理解 / 時間順序 / 動作路徑」。若缺：VQA 會偏向靜態屬性(顏色/位置)，<b>無法評估時序與全局推理</b>；而對 VLA 來說，時序與軌跡理解正是與 action 最相關的維度，缺了會低估 VLM 對操作任務的幫助。本專案 7 類齊全即為涵蓋這些面向。</p>
 </div>
 
-<h2>5 · 本專案腳本逐一說明（fine-tune / eval pipeline）</h2>
+<!-- ============================================================= 6 -->
+<h2 id="s6">6 · 本專案腳本（fine-tune / eval pipeline）</h2>
 <div class="card">
 <h3>train_vlm_lora.py 的 SFT 資料流（含對應 API）</h3>
-<svg viewBox="0 0 920 188" width="100%">
- <defs><marker id="sf" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4cc2ff"/></marker>
+<figure>
+<svg viewBox="0 0 920 184" width="100%" role="img" aria-label="train_vlm_lora SFT dataflow">
+ <title>VQA JSONL → Dataset/Collator（label-mask）→ Cosmos-R2 + LoRA → Trainer.train → 存檔/合併</title>
+ <defs><marker id="sf" markerWidth="7" markerHeight="7" refX="6" refY="2.6" orient="auto"><path d="M0,0 L6,2.6 L0,5.2 Z" fill="#4cc2ff"/></marker>
  <style>.b{fill:#1f2832;stroke:#2b3947}.lo{fill:#13261a;stroke:#7ee787}.t{fill:#e6edf3;font:600 12px 'Segoe UI'}.s{fill:#9fb0c0;font:10.5px 'Segoe UI'}.api{fill:#ffa657;font:10px 'Segoe UI'}
- .fl{stroke:#4cc2ff;stroke-width:2.5;fill:none;stroke-dasharray:6 10;animation:sfd 1s linear infinite;marker-end:url(#sf)}@keyframes sfd{to{stroke-dashoffset:-32}}</style></defs>
- <rect class="b" x="6" y="40" width="150" height="74" rx="9"/><text class="t" x="18" y="64">VQA JSONL</text><text class="s" x="18" y="82">data.train.jsonl</text><text class="s" x="18" y="100">images/ + &lt;image&gt;</text>
- <rect class="b" x="192" y="40" width="166" height="74" rx="9"/><text class="t" x="204" y="64">Dataset + Collator</text><text class="s" x="204" y="82">label-mask 只算答案</text><text class="api" x="204" y="102">apply_chat_template · -100</text>
- <rect class="lo" x="394" y="40" width="168" height="74" rx="9"/><text class="t" x="406" y="64">Cosmos-R2 + LoRA</text><text class="s" x="406" y="82">凍結底座 · 只訓 A·B</text><text class="api" x="406" y="102">get_peft_model(LoraConfig)</text>
- <rect class="b" x="598" y="40" width="166" height="74" rx="9"/><text class="t" x="610" y="64">Trainer.train()</text><text class="s" x="610" y="82">→ CausalLM loss</text><text class="api" x="610" y="102">Trainer · TrainingArguments</text>
- <rect class="lo" x="800" y="40" width="114" height="74" rx="9"/><text class="t" x="812" y="64">save → adapter</text><text class="s" x="812" y="82">→ merge → A</text><text class="api" x="812" y="102">save_pretrained</text>
- <path class="fl" d="M156,77 L192,77"/><path class="fl" d="M358,77 L394,77"/><path class="fl" d="M562,77 L598,77"/><path class="fl" d="M764,77 L800,77"/>
- <text class="s" x="6" y="140">底座 <tspan fill="#e6edf3">Qwen3VLForConditionalGeneration.from_pretrained(nvidia/Cosmos-Reason2-2B)</tspan>；只有綠框（LoRA A·B、存檔）被訓練／輸出，底座權重凍結。</text>
- <text class="s" x="6" y="160">loss 由 model 內部以 <tspan fill="#e6edf3">labels</tspan> 算（CausalLM 交叉熵），label-mask 後只對 assistant 答案 token 計入；<tspan fill="#e6edf3">Trainer</tspan> 只負責外圈訓練迴圈（batching / optimizer / 存檔）。</text>
+ .fl{stroke:#3a4a5a;stroke-width:2;fill:none;stroke-dasharray:6 10;animation:sfd 1s linear infinite;marker-end:url(#sf)}@keyframes sfd{to{stroke-dashoffset:-32}}</style></defs>
+ <rect class="b" x="6" y="36" width="150" height="74" rx="9"/><text class="t" x="18" y="60">VQA JSONL</text><text class="s" x="18" y="78">data.train.jsonl</text><text class="s" x="18" y="96">images/ + &lt;image&gt;</text>
+ <rect class="b" x="192" y="36" width="166" height="74" rx="9"/><text class="t" x="204" y="60">Dataset + Collator</text><text class="s" x="204" y="78">label-mask 只算答案</text><text class="api" x="204" y="98">apply_chat_template · -100</text>
+ <rect class="lo" x="394" y="36" width="168" height="74" rx="9"/><text class="t" x="406" y="60">Cosmos-R2 + LoRA</text><text class="s" x="406" y="78">凍結底座 · 只訓 A·B</text><text class="api" x="406" y="98">get_peft_model(LoraConfig)</text>
+ <rect class="b" x="598" y="36" width="166" height="74" rx="9"/><text class="t" x="610" y="60">Trainer.train()</text><text class="s" x="610" y="78">→ CausalLM loss</text><text class="api" x="610" y="98">Trainer · TrainingArguments</text>
+ <rect class="lo" x="800" y="36" width="114" height="74" rx="9"/><text class="t" x="812" y="60">save → adapter</text><text class="s" x="812" y="78">→ merge → A</text><text class="api" x="812" y="98">save_pretrained</text>
+ <path class="fl" d="M156,73 H192"/><path class="fl" d="M358,73 H394"/><path class="fl" d="M562,73 H598"/><path class="fl" d="M764,73 H800"/>
+ <text class="s" x="6" y="138">底座 <tspan fill="#e6edf3">Qwen3VLForConditionalGeneration.from_pretrained(nvidia/Cosmos-Reason2-2B)</tspan>；只有綠框（LoRA A·B、存檔）被訓練／輸出，底座權重凍結。</text>
+ <text class="s" x="6" y="158">loss 由 model 內部以 <tspan fill="#e6edf3">labels</tspan> 算（CausalLM 交叉熵），label-mask 後只對 assistant 答案 token 計入；<tspan fill="#e6edf3">Trainer</tspan> 只負責外圈訓練迴圈（batching / optimizer / 存檔）。</text>
 </svg>
+<figcaption>圖 5 · 綠框為被訓練／輸出的部分（LoRA A·B 與存檔），其餘凍結；loss 在 model 內以 label-mask 後的 CausalLM 交叉熵計算，Trainer 僅負責外圈訓練迴圈。</figcaption>
+</figure>
 </div>
 <table>
 <tr><th>腳本</th><th>作用</th><th>關鍵 API</th></tr>
-<tr>
-  <td><code>gen_vqa_from_lerobot.py</code></td>
-  <td>從 LeRobot v2 影片依 6 個動作階段（approach / grasp / pick / move_to_plate / place / retract）各抽 1 幀，使用 teacher VLM 生成 VQA JSONL；輸出 <code>data.train.jsonl</code>、<code>data.val.jsonl</code>、<code>images/</code>、<code>stats.json</code></td>
-  <td><code>AutoModelForImageTextToText</code>、<code>AutoProcessor</code>、<code>cv2.VideoCapture</code></td>
-</tr>
-<tr>
-  <td><code>vqa_dataset.py</code></td>
-  <td>JSONL → PyTorch <code>Dataset</code> + <code>Collator</code>；將 <code>&lt;image&gt;</code> 佔位字串轉換為結構化 content（<code>[{type:image}, …]</code>），以正確觸發 image token 展開；label masking 將 prompt/影像 token 設為 <code>IGNORE_INDEX=-100</code>，只對 assistant 答案 token 計算 loss</td>
-  <td><code>processor.apply_chat_template</code>、<code>IGNORE_INDEX=-100</code></td>
-</tr>
-<tr>
-  <td><code>lora_args.py</code></td>
-  <td>定義 LoRA 超參數（<code>lora_r</code>、<code>lora_alpha</code>、<code>lora_dropout</code>）與 target 模組（<code>llm</code> 模式：q/k/v/o/gate/up/down proj，可選額外掛 vision encoder）；構建 <code>peft.LoraConfig</code></td>
-  <td><code>peft.LoraConfig(task_type="CAUSAL_LM")</code></td>
-</tr>
-<tr>
-  <td><code>train_vlm_lora.py</code></td>
-  <td>標準 HF SFT 流程：載入底座 → <code>get_peft_model</code> 插入 LoRA → <code>Trainer.train</code>；訓練結束後儲存 adapter 與 processor</td>
-  <td><code>Qwen3VLForConditionalGeneration</code>、<code>Trainer</code>、<code>TrainingArguments</code>、<code>get_peft_model</code></td>
-</tr>
-<tr>
-  <td><code>merge_lora.py</code></td>
-  <td>將 LoRA adapter 併回底座權重，輸出獨立可推論的 VLM（Product A）；使用 <code>safe_serialization=True</code> 以 safetensors 格式儲存</td>
-  <td><code>PeftModel.merge_and_unload()</code></td>
-</tr>
-<tr>
-  <td><code>swap_backbone.py</code></td>
-  <td>純 safetensors 操作：將 Product A 的 <code>backbone.model.*</code> 鍵值置換回現有 VLA checkpoint，以 VLA 端的 backbone key 逐一到 merged 對應取值（兩邊都有且形狀相符才置換，merged 多出的層自動略過），保留 action head 不動；輸出「置換後 VLA」（Product B）</td>
-  <td><code>safetensors.torch.load_file</code>、<code>safetensors.torch.save_file</code>（key 交集 swap）</td>
-</tr>
-<tr>
-  <td><code>eval_vlm_vqa.py</code></td>
-  <td>對 VLM checkpoint 執行 VQA 準確率評測：按 <code>type</code> 欄位分類統計，答案正規化後做子字串匹配；輸出 per-type 與 Overall 準確率 JSON</td>
-  <td><code>model.generate</code>、<code>processor.batch_decode</code>、正規化子字串比對</td>
-</tr>
-<tr>
-  <td><code>eval_toolcall.py</code></td>
-  <td>評測 tool-calling 輸出：解析預測文字與 gold，計算 valid-parse、skills-in-vocab、name-sequence、args-exact 四項指標；使用 <code>ToolCallVLM</code>（來自 <code>serve/model.py</code>）在 GPU 上推論</td>
-  <td><code>parse_tool_calls</code>、<code>ToolCallVLM.complete</code></td>
-</tr>
-<tr>
-  <td><code>infer_vlm.py</code></td>
-  <td>單張影像 + 問題的快速推論腳本（Product A 獨立使用，無 GR00T dependency）；命令列直接呼叫</td>
-  <td><code>Qwen3VLForConditionalGeneration</code>、<code>AutoProcessor</code>、<code>model.generate</code></td>
-</tr>
-<tr>
-  <td><code>serve/model.py</code></td>
-  <td>封裝 <code>ToolCallVLM</code> 類別：載入 merged VLM 一次並重複使用；解析 OpenAI 格式的 multimodal <code>image_url</code>（data-URI 或路徑），插入 tool-describing system prompt，回傳 <code>{text, calls}</code></td>
-  <td><code>Qwen3VLForConditionalGeneration</code>、<code>build_tool_system</code>、<code>parse_tool_calls</code>（FastAPI 層在 <code>serve/openai_app.py</code>）</td>
-</tr>
+<tr><td><code>gen_vqa_from_lerobot.py</code></td><td>從 LeRobot v2 影片依 6 個動作階段各抽 1 幀，使用 teacher VLM 生成 VQA JSONL；輸出 <code>data.train.jsonl</code>、<code>data.val.jsonl</code>、<code>images/</code>、<code>stats.json</code></td><td><code>AutoModelForImageTextToText</code>、<code>AutoProcessor</code>、<code>cv2.VideoCapture</code></td></tr>
+<tr><td><code>vqa_dataset.py</code></td><td>JSONL → PyTorch <code>Dataset</code> + <code>Collator</code>；將 <code>&lt;image&gt;</code> 佔位轉為結構化 content 以正確觸發 image token；label masking 將 prompt／影像 token 設 <code>IGNORE_INDEX=-100</code>，只對答案 token 算 loss</td><td><code>processor.apply_chat_template</code>、<code>IGNORE_INDEX=-100</code></td></tr>
+<tr><td><code>lora_args.py</code></td><td>定義 LoRA 超參數（<code>lora_r</code>、<code>lora_alpha</code>、<code>lora_dropout</code>）與 target 模組（q/k/v/o/gate/up/down proj，可選掛 vision encoder）；構建 <code>peft.LoraConfig</code></td><td><code>peft.LoraConfig(task_type="CAUSAL_LM")</code></td></tr>
+<tr><td><code>train_vlm_lora.py</code></td><td>標準 HF SFT：載入底座 → <code>get_peft_model</code> 插入 LoRA → <code>Trainer.train</code>；結束後儲存 adapter 與 processor</td><td><code>Qwen3VLForConditionalGeneration</code>、<code>Trainer</code>、<code>TrainingArguments</code>、<code>get_peft_model</code></td></tr>
+<tr><td><code>merge_lora.py</code></td><td>將 LoRA adapter 併回底座，輸出獨立可推論的 VLM（產物 A）；<code>safe_serialization=True</code></td><td><code>PeftModel.merge_and_unload()</code></td></tr>
+<tr><td><code>swap_backbone.py</code></td><td>純 safetensors 操作：以 VLA 端 backbone key 逐一到 merged 取值（兩邊都有且形狀相符才置換、merged 多出的層自動略過），保留 action head；輸出產物 B</td><td><code>safetensors.torch.load_file / save_file</code>（key 交集 swap）</td></tr>
+<tr><td><code>eval_vlm_vqa.py</code></td><td>對 VLM 執行 VQA 準確率評測：按 <code>type</code> 分類，答案正規化後子字串匹配；輸出 per-type 與 Overall JSON</td><td><code>model.generate</code>、<code>processor.batch_decode</code></td></tr>
+<tr><td><code>eval_toolcall.py</code></td><td>評測 tool-calling：valid-parse、skills-in-vocab、name-sequence、args-exact 四項指標；用 <code>ToolCallVLM</code> 推論</td><td><code>parse_tool_calls</code>、<code>ToolCallVLM.complete</code></td></tr>
+<tr><td><code>infer_vlm.py</code></td><td>單張影像 + 問題的快速推論（產物 A 獨立使用，無 GR00T dependency）</td><td><code>Qwen3VLForConditionalGeneration</code>、<code>AutoProcessor</code>、<code>model.generate</code></td></tr>
+<tr><td><code>serve/model.py</code></td><td><code>ToolCallVLM</code>：載入 merged VLM 一次重複使用；解析 OpenAI multimodal <code>image_url</code>，插入 tool system prompt，回傳 <code>{text, calls}</code></td><td><code>Qwen3VLForConditionalGeneration</code>、<code>build_tool_system</code>、<code>parse_tool_calls</code></td></tr>
 </table>
-<div class="note">
-<b>train_vlm_lora.py 是 transformers 標準 SFT 流程嗎？與 GR00T N1.7 訓練有何不同？</b><br>
-<code>train_vlm_lora.py</code> 是 transformers 標準 SFT 流程（<code>AutoProcessor</code> + <code>Qwen3VLForConditionalGeneration</code> + <code>peft.get_peft_model</code> + <code>Trainer</code> / <code>TrainingArguments</code>），但<b>綁定 Qwen3-VL 類別與其 proj 名稱</b>；換 VLM 家族需改 <code>AutoModelForImageTextToText</code> 子類與 LoRA target 模組名稱。<br><br>
-與 GR00T N1.7 訓練<b>本質不同</b>——後者使用 GR00T 自家 trainer，訓練對象是整個 VLA（backbone + action adapter + DiT），loss 為 flow-matching action loss，非 HF <code>Trainer</code>、非 CausalLM token loss。本流程只訓練 VLM 的語言理解能力（VQA），action head 完全獨立，最終透過 <code>swap_backbone.py</code> 以 safetensors 鍵值置換的方式注入 VLA。
-</div>
+<div class="note">本流程只訓練 VLM 的語言理解（VQA）；action head 完全獨立，最終以 <code>swap_backbone.py</code> 的 safetensors 鍵值置換注入 VLA。它與 GR00T N1.7 自家 trainer（flow-matching action loss）<b>本質不同</b>——詳見附錄 A 的 Q9–Q11。</div>
+
+<!-- ============================================================= Appendix -->
+<h2 id="sA">附錄 A · 技術問答（Q&amp;A）</h2>
+<p class="mut">以下為與正文互補的深入技術問答，集中於名詞歸屬、流程通用性、MoE 觀察與訓練目標的差異；正文已說明的概念此處不重述，只補細節。</p>
+
 <div class="card">
-<h3>你問的幾個概念（CausalLM loss / HF Trainer / 26 維）</h3>
-<table>
-<tr><th>問題</th><th>說明</th></tr>
-<tr><td>什麼是 <b>CausalLM loss</b>？和 <b>HF Trainer</b> 有何不同？</td>
-<td>兩者是<b>不同層次</b>、非替代關係：<br>
-• <b>CausalLM loss</b> = 自回歸語言模型「預測下一個 token」的<b>交叉熵</b>（next-token cross-entropy），是<b>訓練目標(loss)</b>。把 <code>labels</code> 傳進 <code>Qwen3VLForConditionalGeneration</code> 時模型內部就算它；本專案再加 label-mask，只對 assistant 答案 token 計入（prompt／影像 token 設 <code>-100</code> 略過）。<br>
-• <b>HF <code>Trainer</code></b> = 訓練的<b>流程引擎(loop)</b>：負責 batching、grad-accum、optimizer step、lr schedule、logging、存檔、分散式等，<b>不決定 loss</b>（loss 由 model 回傳）。<br>
-所以「用 HF Trainer」與「用 CausalLM loss」是<b>正交</b>的：Trainer 是外圈迴圈，CausalLM loss 是裡面的目標函數。</td></tr>
-<tr><td>GR00T 若也微調 backbone，訓練方式也不同嗎？</td>
-<td><b>仍然不同。</b>即使 GR00T 解凍 backbone（<code>tune_llm=True</code> / <code>tune_top_llm_layers&gt;0</code> / 對 backbone 掛 LoRA），它<b>不是用 CausalLM／VQA loss、也不是用 HF Trainer</b>。backbone 的梯度是從 <b>flow-matching action loss</b> 經 DiT／adapter <b>反傳</b>回來——目的是讓 backbone 產生「更利於預測動作的特徵」，<u>而非</u>更會生成文字。差異不只在「動不動 backbone」，而在<b>目標函數與訓練迴圈本身</b>：GR00T＝自家 trainer＋flow-matching action loss；本流程＝HF Trainer＋CausalLM 文字 loss。</td></tr>
-<tr><td>為什麼 flow-matching action loss 是 <b>26 維</b>，不是 32？</td>
-<td>26 是 <b>OpenArm O6 這個 embodiment 的真實動作維度</b>：雙臂各 7-DoF（14）＋雙靈巧手各 6-DoF（12）＝ <b>26</b>（見 dataset 的 <code>action.shape=[26]</code>、<code>observation.state.shape=[26]</code>）。模型為支援多體系，把動作補零到 <code>max_action_dim=132</code> 的統一槽位，並以 <code>action_mask</code> 只對真實 26 維算 loss。<b>32 不是動作維度</b>——那是別處的數字（DiT 的 attention heads＝32、<code>max_num_embodiments</code>＝32）。「26 維」＝真實自由度、「32」＝注意力頭／體系數，兩者無關。</td></tr>
-</table>
+<h3>A-1 · 架構與名詞歸屬</h3>
+<dl class="qa">
+<dt><span class="n">Q1</span> <code>vlln</code> 是什麼？<code>vl_self_attention</code> 算 VLM 還是 DiT？</dt>
+<dd><code>vlln</code> 是 <b>Vision-Language LayerNorm</b> 的專案命名：在 <code>Gr00tN1d7ActionHead</code> 中實作為 <code>nn.LayerNorm(backbone_embedding_dim)</code>，本 checkpoint 是 LayerNorm(2048)；它屬 <code>action_head.vlln.*</code>，不是 VLM backbone。<code>vl_self_attention</code> 也不是 backbone、也不是 DiT 本體，而是 action head 內、接在 vlln 後的 <b>4 層 VL feature adapter</b>（<code>action_head.vl_self_attention.*</code>）。DiT 本體在 <code>action_head.model.*</code>，本 checkpoint 為 32 層。</dd>
+
+<dt><span class="n">Q2</span> <code>Qwen3VLForConditionalGeneration</code> 是 transformers 公定格式嗎？</dt>
+<dd><b>不是跨所有 VLM 的公定類別名稱</b>，而是 HF Transformers 為 <b>Qwen3-VL 架構</b>提供的模型 class。公定／通用的是介面慣例：<code>PreTrainedModel</code>、<code>from_pretrained()</code>、<code>save_pretrained()</code>、<code>generate()</code>、<code>AutoProcessor</code>、以及較通用的 <code>AutoModelForImageTextToText</code>。換成 LLaVA、Idefics、Gemma、Mllama 等，會換成各家族自己的 class 或對應 AutoModel。</dd>
+
+<dt><span class="n">Q3</span> 為什麼程式碼預設 <code>select_layer=12</code>，但 checkpoint 是 16？</dt>
+<dd><code>configs/model/gr00t_n1d7.py</code> 的 12 只是 dataclass fallback；訓練／儲存時 config 可覆寫它。本例 <code>checkpoint-150000/config.json</code> 明寫 <code>select_layer=16</code>，safetensors 也只見 <code>...language_model.layers.0..15</code>。「程式預設 12」不等於「所有產物都用 12」；部署以各 checkpoint 的 <code>config.json</code> 為準。</dd>
+</dl>
 </div>
 
-<h2>6 · 案例分析</h2>
-<div class="grid g2">
-<div class="card"><h3>案例 A — VLM：本專案（Cosmos-R2 VQA LoRA）</h3>
-<p class="mut">影像+問答多模態；凍結 vision、LoRA 調 LLM；label-mask 只對答案算 loss；指標：VQA 準確率（按題型）+ 置換進 VLA 後的 action MSE/MAE。完整數字見專案報告 §5/§6。</p></div>
-<div class="card"><h3>案例 B — 純 LLM LoRA（對照）</h3>
-<p class="mut">純文字指令微調（如客服/領域問答）：無 vision/projector、無 image token；資料是純文字對話；指標多為文字準確率/BLEU/人評。相同點：凍結底座、低秩 A·B、label-mask 答案、bf16+grad-ckpt。相異點：VLM 多了視覺編碼、image-token 對齊與更長序列/顯存壓力。</p></div>
+<div class="card">
+<h3>A-2 · 合併、置換與特徵偏移</h3>
+<dl class="qa">
+<dt><span class="n">Q4</span> 為什麼第 16–27 層的 LoRA delta 被丟棄？不能整個 28 層放回去嗎？</dt>
+<dd>獨立 LoRA 確實在完整 28 層 VLM 上訓練，merged VLM 有 layers <code>0..27</code>。但 GR00T N1.7 VLA backbone 初始化時執行 <code>while len(language_model.layers) &gt; select_layer: pop(-1)</code>，本例 <code>select_layer=16</code>，故 VLA 只存在 layers <code>0..15</code> 的目的 key。<code>swap_backbone.py</code> 以「VLA key 為主」逐一找 merged 對應 tensor；VLA 沒有 16–27 層的 key，就沒地方可寫。硬塞 28 層會改變結構、forward 計算量與 hidden 分佈，也會讓已訓練的 action head 接到不同層語意 → 那是重建／重訓 VLA，而非 swap。</dd>
+
+<dt><span class="n">Q5</span> 為什麼需要 merge？「底座」是什麼？</dt>
+<dd>LoRA 輸出的 <code>adapter_model.safetensors</code> 只存低秩 delta（A/B），不是完整 VLM。<b>底座</b>＝原始 pretrained base（如 <code>nvidia/Cosmos-Reason2-2B</code>）。未 merge 時推論需「底座 + adapter」一起載入；merge 會把 <code>ΔW = B·A·scale</code> 寫回底座，輸出完整 standalone VLM（產物 A），可用普通 <code>from_pretrained()</code> 載入、也可作為 swap 來源。PEFT 的 <code>merge_and_unload</code> 即為此用途。</dd>
+
+<dt><span class="n">Q6</span> <code>.safetensors</code> 就是「完整 VLM 參數檔」嗎？swap/merge 是針對此檔案置換嗎？</dt>
+<dd><code>.safetensors</code> 只是安全的 tensor 儲存格式，要看目錄與 key：<code>cosmos_r2_lora_*/checkpoint-*/adapter_model.safetensors</code> 是 LoRA adapter（非完整 VLM）；GR00T VLA sharded checkpoint 含 <code>backbone.model.*</code> 與 <code>action_head.*</code>；merged 產物 A 的 <code>model.safetensors</code> 才是完整 standalone VLM。<code>merge_lora.py</code> 載入底座 + adapter 輸出 merged；<code>swap_backbone.py</code> 只替換 VLA 中形狀相符的 <code>backbone.model.*</code>。</dd>
+
+<dt><span class="n">Q7</span> 「凍結 adapter/DiT 需承受小幅 VL 特徵偏移」具體是什麼偏移？</dt>
+<dd>特徵張量形狀仍是 <code>[B, seq_len, 2048]</code>，但 swap 後 vision/embedding/LLM 前 16 層權重經 VQA LoRA 改過，每個 token 的 hidden vector 數值分佈會變（均值/方差、attention 後 token 關係、物體/顏色/任務文字 token 的語意方向、各層 feature scale）。由於 vlln、4 層 adapter、32 層 DiT、state/action 編解碼器都保持原權重，必須仍能把這批稍變的 VL features 映射到正確 action。偏移小 → action MSE/MAE 持平或改善；偏移大 → DiT cross-attention 讀到不同語意/尺度的條件 → 動作誤差上升。這就是 swap 後必跑 VLA action eval 的原因。</dd>
+</dl>
 </div>
 
-<p class="mut" style="margin-top:30px;border-top:1px solid var(--line);padding-top:12px">搭配閱讀：<code>docs/project_report.html</code>（本專案的結果與三方產物）。</p>
+<div class="card">
+<h3>A-3 · VQA 資料與 teacher 觀察</h3>
+<dl class="qa">
+<dt><span class="n">Q8</span> 為什麼 30B-A3B 的答案比 8B 簡短／籠統？是 MoE 的本質嗎？</dt>
+<dd><b>非 MoE 本質。</b>主因：(1) 兩模型 instruction-tuning 風格不同（30B 偏精簡）；(2) 都用 greedy 解碼（<code>do_sample=False</code>）；(3) 樣本小、屬軼事級觀察。不能推論「MoE 就比較籠統」。此外「8B 每影格固定 4 題」是 prompt 要求（「generate 4 diverse QA pairs」）而非模型限制——30B 有時會多給 3–7 題。</dd>
+
+<dt><span class="n">Q9</span> 若缺 Summary / Temporal / Trajectory 題型會怎樣？</dt>
+<dd>這三類分別測「場景整體理解／時間順序／動作路徑」。缺了，VQA 會偏向靜態屬性（顏色/位置），<b>無法評估時序與全局推理</b>；而時序與軌跡理解正是與 action 最相關的維度，缺了會低估 VLM 對操作任務的幫助。本專案 7 類齊全即為涵蓋這些面向。</dd>
+</dl>
+</div>
+
+<div class="card">
+<h3>A-4 · 訓練目標：CausalLM loss、Trainer 與動作維度</h3>
+<dl class="qa">
+<dt><span class="n">Q10</span> 什麼是 <b>CausalLM loss</b>？和 <b>HF Trainer</b> 有何不同？</dt>
+<dd>兩者是<b>不同層次、非替代</b>關係。<b>CausalLM loss</b> ＝ 自回歸「預測下一個 token」的<b>交叉熵</b>，是<b>訓練目標</b>：把 <code>labels</code> 傳進 <code>Qwen3VLForConditionalGeneration</code> 時模型內部即計算，本專案再加 label-mask 只對答案 token 計入。<b>HF <code>Trainer</code></b> ＝ 訓練的<b>流程引擎</b>：負責 batching、grad-accum、optimizer step、lr schedule、logging、存檔、分散式，<b>不決定 loss</b>。兩者正交：Trainer 是外圈迴圈，CausalLM loss 是其中的目標函數。</dd>
+
+<dt><span class="n">Q11</span> GR00T 若也微調 backbone，訓練方式也不同嗎？</dt>
+<dd><b>仍然不同。</b>即使 GR00T 解凍 backbone（<code>tune_llm=True</code> / <code>tune_top_llm_layers&gt;0</code> / 對 backbone 掛 LoRA），它<b>不是用 CausalLM／VQA loss、也不是 HF Trainer</b>。backbone 的梯度是從 <b>flow-matching action loss</b> 經 DiT／adapter 反傳回來——目的是讓 backbone 產生「更利於預測動作的特徵」，而非更會生成文字。差異不只在「動不動 backbone」，而在<b>目標函數與訓練迴圈本身</b>：GR00T ＝ 自家 trainer + flow-matching action loss；本流程 ＝ HF Trainer + CausalLM 文字 loss。</dd>
+
+<dt><span class="n">Q12</span> 為什麼 flow-matching action loss 是 <b>26 維</b>，不是 32？</dt>
+<dd>26 是 <b>OpenArm O6 這個 embodiment 的真實動作維度</b>：雙臂各 7-DoF（14）＋雙靈巧手各 6-DoF（12）＝ <b>26</b>（見 dataset 的 <code>action.shape=[26]</code>）。模型為支援多體系，把動作補零到 <code>max_action_dim=132</code>，並以 <code>action_mask</code> 只對真實 26 維算 loss。<b>32 不是動作維度</b>——那是 DiT 的 attention heads（32）與 <code>max_num_embodiments</code>（32）。「26」＝真實自由度、「32」＝注意力頭／體系數，兩者無關。</dd>
+
+<dt><span class="n">Q13</span> <code>train_vlm_lora.py</code> 是所有 VLM 通用的腳本嗎？其他架構怎麼做？</dt>
+<dd>流程是標準 HF/PEFT SFT 配方（見 §3 對照表），但<b>不是零修改通用</b>：目前綁定 Qwen3-VL class，LoRA target 假設 Qwen 模組名（<code>q/k/v/o/gate/up/down_proj</code>）。同屬 Qwen3-VL / Cosmos-R2 相容架構通常可直接用；其他架構的標準範本是——換成該模型的 <code>AutoModelForImageTextToText</code> 或專屬 class、確認 processor/chat template、重選 <code>target_modules</code>、保持 label masking 與 Trainer 流程。即「流程標準、但 model class 與 target module 名稱依架構調整」。</dd>
+</dl>
+</div>
+
+<p class="mut" style="margin-top:30px;border-top:1px solid var(--line);padding-top:12px">搭配閱讀：<code>docs/project_report.html</code>（本專案的結果、三方產物與部署資料流）。</p>
 </div></body></html>
