@@ -26,6 +26,119 @@
 <h1>LLM 與 VLM 微調指南</h1>
 <p class="mut">從一般大型語言模型（LLM）到視覺語言模型（VLM）的微調方法、挑戰與解法；以本專案（Cosmos-Reason2-2B VQA LoRA）為實例。含動畫資料流圖。</p>
 
+<h2>0 · 本專案精準結論：Cosmos-R2 / GR00T N1.7 / LoRA / swap</h2>
+<div class="note">
+本節依目前 checkout 實際程式碼與 checkpoint 檢查結果整理：<code>checkpoint-150000/config.json</code> 為 <code>select_layer=16</code>、<code>vl_self_attention_cfg.num_layers=4</code>、<code>diffusion_model_cfg.num_layers=32</code>；VLA safetensors 內有 <code>backbone.model.*</code> 493 個 tensor、<code>action_head.*</code> 537 個 tensor，其中 <code>action_head.vlln.*</code> 2 個、<code>action_head.vl_self_attention.*</code> 64 個；VLA 的 LLM layers 實際只有 <code>0..15</code>。merged 6phase VLM 則是 <code>Qwen3VLForConditionalGeneration</code>，單一 <code>model.safetensors</code>，LLM layers <code>0..27</code>。
+</div>
+
+<div class="card">
+<h3>完整關係圖：獨立 VLM、VLA、LoRA merge、swap</h3>
+<svg viewBox="0 0 1040 430" width="100%">
+ <defs>
+  <marker id="qa" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4cc2ff"/></marker>
+  <style>
+   .box{fill:#1f2832;stroke:#2b3947}.v{fill:#102334;stroke:#4cc2ff}.h{fill:#241c13;stroke:#ffa657}.g{fill:#13261a;stroke:#7ee787}.p{fill:#261b33;stroke:#d2a8ff}
+   .tt{fill:#e6edf3;font:600 13px 'Segoe UI'}.ss{fill:#9fb0c0;font:11px 'Segoe UI'}.aa{fill:#ffa657;font:10.5px 'Segoe UI'}
+   .arr{stroke:#4cc2ff;stroke-width:2.4;fill:none;marker-end:url(#qa)}
+   .dash{stroke:#7ee787;stroke-width:2.4;fill:none;stroke-dasharray:7 8;marker-end:url(#qa)}
+  </style>
+ </defs>
+ <text class="tt" x="20" y="26">A. 獨立 VLM：Cosmos-Reason2-2B / Product A</text>
+ <rect class="box" x="20" y="48" width="116" height="56" rx="8"/><text class="tt" x="35" y="75">image + text</text><text class="ss" x="35" y="92">chat template</text>
+ <path class="arr" d="M136,76 H174"/>
+ <rect class="v" x="174" y="48" width="128" height="56" rx="8"/><text class="tt" x="190" y="73">Vision encoder</text><text class="ss" x="190" y="91">visual / ViT</text>
+ <path class="arr" d="M302,76 H340"/>
+ <rect class="v" x="340" y="48" width="128" height="56" rx="8"/><text class="tt" x="359" y="73">Projector</text><text class="ss" x="359" y="91">image token 對齊</text>
+ <path class="arr" d="M468,76 H506"/>
+ <rect class="v" x="506" y="48" width="202" height="56" rx="8"/><text class="tt" x="524" y="73">Qwen3 language_model</text><text class="ss" x="524" y="91">完整 28 層：0..27</text>
+ <path class="arr" d="M708,76 H746"/>
+ <rect class="box" x="746" y="48" width="126" height="56" rx="8"/><text class="tt" x="765" y="73">lm_head</text><text class="ss" x="765" y="91">文字答案 / VQA</text>
+
+ <rect class="g" x="506" y="126" width="202" height="48" rx="8"/><text class="tt" x="523" y="149">LoRA adapter</text><text class="ss" x="523" y="166">q/k/v/o + gate/up/down</text>
+ <path class="dash" d="M606,126 V104"/>
+ <rect class="g" x="746" y="126" width="126" height="48" rx="8"/><text class="tt" x="766" y="149">merge</text><text class="ss" x="766" y="166">W' = W + ΔW</text>
+ <path class="dash" d="M708,150 H746"/>
+
+ <text class="tt" x="20" y="226">B. GR00T N1.7 VLA checkpoint：backbone + action head</text>
+ <rect class="box" x="20" y="248" width="116" height="58" rx="8"/><text class="tt" x="41" y="275">robot obs</text><text class="ss" x="36" y="292">image/state/text</text>
+ <path class="arr" d="M136,277 H174"/>
+ <rect class="v" x="174" y="248" width="246" height="58" rx="8"/><text class="tt" x="192" y="273">backbone.model.* = VLM backbone</text><text class="ss" x="192" y="291">vision + embeddings + LLM 0..15 only</text>
+ <path class="arr" d="M420,277 H458"/>
+ <rect class="h" x="458" y="248" width="106" height="58" rx="8"/><text class="tt" x="481" y="273">vlln</text><text class="ss" x="476" y="291">LayerNorm 2048</text>
+ <path class="arr" d="M564,277 H602"/>
+ <rect class="h" x="602" y="248" width="138" height="58" rx="8"/><text class="tt" x="616" y="273">vl_self_attention</text><text class="ss" x="616" y="291">4-layer adapter</text>
+ <path class="arr" d="M740,277 H778"/>
+ <rect class="h" x="778" y="248" width="124" height="58" rx="8"/><text class="tt" x="817" y="273">DiT</text><text class="ss" x="800" y="291">32 層 action model</text>
+ <path class="arr" d="M902,277 H946"/>
+ <rect class="box" x="946" y="248" width="74" height="58" rx="8"/><text class="tt" x="960" y="273">action</text><text class="ss" x="958" y="291">26 dim</text>
+
+ <path class="dash" d="M607,174 C607,210 296,210 296,248"/>
+ <text class="aa" x="336" y="214">swap_backbone：只用 VLA 端存在的 backbone key 交集複製；action_head.* 不動</text>
+ <rect class="p" x="174" y="338" width="728" height="54" rx="8"/><text class="tt" x="193" y="362">為什麼 LLM 第 16–27 層的 delta 會丟棄？</text><text class="ss" x="193" y="380">因 VLA checkpoint 只有 layers 0..15 的目的 key；swap 以 VLA key 為主迴圈，merged VLM 多出的 16..27 層沒有位置可寫入。</text>
+</svg>
+</div>
+
+<h3>逐題精準回答</h3>
+<table>
+<tr><th>#</th><th>問題</th><th>答案</th></tr>
+<tr>
+<td>1</td>
+<td><code>vlln</code> 是什麼？<code>vl_self_attention</code> 算 VLM 或 DiT？</td>
+<td><code>vlln</code> 是 <b>Vision-Language LayerNorm</b> 的專案命名：在 <code>Gr00tN1d7ActionHead</code> 中實作為 <code>nn.LayerNorm(config.backbone_embedding_dim)</code>，本 checkpoint 是 LayerNorm(2048)。它不是 VLM backbone，而是 <code>action_head.vlln.*</code>。<br><br><code>vl_self_attention</code> 也不是 VLM backbone、也不是 DiT 本體；它是 action head 內、接在 vlln 後面的 <b>4 層 VL feature adapter</b>，key 前綴是 <code>action_head.vl_self_attention.*</code>。DiT 本體在 <code>action_head.model.*</code>，本 checkpoint 為 32 層。</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>Qwen3VLForConditionalGeneration</code> 是 transformers 公定格式嗎？</td>
+<td><b>不是跨所有 transformer/VLM 的公定類別名稱</b>；它是 Hugging Face Transformers 對 <b>Qwen3-VL 架構</b>提供的模型 class。公定/通用的是 HF 介面慣例：<code>PreTrainedModel</code>、<code>from_pretrained()</code>、<code>save_pretrained()</code>、<code>generate()</code>、<code>AutoProcessor</code>、以及較通用的 <code>AutoModelForImageTextToText</code>。換成 LLaVA、Idefics、Gemma、Mllama 等 VLM，通常會換成該家族自己的 class 或 AutoModel 對應類別。</td>
+</tr>
+<tr>
+<td>3</td>
+<td>為什麼程式碼預設 <code>select_layer=12</code>，但 checkpoint 是 16？</td>
+<td><code>configs/model/gr00t_n1d7.py</code> 的 12 只是 dataclass fallback/default。實際訓練與儲存 checkpoint 時，訓練 config 可以覆寫它。本例 <code>checkpoint-150000/config.json</code> 明確寫 <code>select_layer=16</code>，而 safetensors key 掃描也只看到 <code>backbone.model.model.language_model.layers.0..15</code>。所以「程式預設 12」不等於「所有訓練產物都用 12」；部署 checkpoint 以其保存的 <code>config.json</code> 為準。</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>train_vlm_lora.py</code> 是標準 transformers 流程嗎？所有 Qwen-VL 都能用嗎？其他架構怎麼做？</td>
+<td>它是標準 HF/PEFT SFT 配方的本專案實作：<code>AutoProcessor</code> + <code>Qwen3VLForConditionalGeneration</code> + <code>get_peft_model(LoraConfig)</code> + <code>Trainer</code>/<code>TrainingArguments</code>。但它<b>不是所有 VLM 零修改通用腳本</b>。目前程式碼綁定 Qwen3-VL class，LoRA target 也假設 Qwen 類模組名：<code>q_proj/k_proj/v_proj/o_proj/gate_proj/up_proj/down_proj</code>。<br><br>若是同樣 Qwen3-VL / Cosmos-Reason2-2B 相容架構，通常可直接用。若是其他架構，標準範本是：換成該模型的 <code>AutoModelForImageTextToText</code> 或專屬 class、確認 processor/chat template、重選 <code>target_modules</code>、保持 label masking 與 Trainer 流程。也就是「流程標準」，但「模型 class 與 target module 名稱要依架構調整」。</td>
+</tr>
+<tr>
+<td>5</td>
+<td>為什麼說第 16–27 層 delta 被丟棄？不能整個 28 層放回去嗎？</td>
+<td>獨立 Cosmos-R2 LoRA 的確是在完整 28 層 VLM 上訓練，merged VLM 也有 LLM layers <code>0..27</code>。但 GR00T N1.7 的 VLA backbone 在初始化時執行 <code>while len(language_model.layers) &gt; select_layer: pop(-1)</code>，本 checkpoint 的 <code>select_layer=16</code>，所以 VLA checkpoint 只存在 layers <code>0..15</code> 的目的 key。<br><br><code>swap_backbone.py</code> 是「以 VLA checkpoint 的 key 為主」逐一找 merged VLM 對應 tensor；VLA 沒有 layers 16–27 的 key，就沒有地方可寫。硬把 28 層都放進去會改變模型結構、forward 計算量、hidden-state 分佈，也會讓已訓練好的 action head 接到不同層語意的特徵；那不是 swap，而是要重建/重訓 VLA 設計。</td>
+</tr>
+<tr>
+<td>6</td>
+<td>為什麼需要 merge？底座是什麼？</td>
+<td>LoRA 訓練輸出的 <code>checkpoint-2000/adapter_model.safetensors</code> 只保存低秩 delta（A/B 矩陣），不是完整 VLM。<b>底座</b>就是原始 pretrained base model，例如 <code>nvidia/Cosmos-Reason2-2B</code>。<br><br>未 merge 時，推論需要「底座 + adapter」一起載入；merge 會把 <code>ΔW = B·A·scale</code> 寫回底座權重，輸出完整 standalone VLM（Product A）。這樣 Product A 可用普通 <code>Qwen3VLForConditionalGeneration.from_pretrained()</code> 載入，也可作為 <code>swap_backbone.py</code> 的來源。PEFT 官方也明確說 <code>merge_and_unload</code> 用於把 adapter layers 合併回 base model，以便當 standalone model 使用。</td>
+</tr>
+<tr>
+<td>7</td>
+<td>safetensors 就是 VLM 參數檔嗎？swap/merge 是針對此檔案置換嗎？</td>
+<td><code>.safetensors</code> 只是安全的 tensor 儲存格式，不自動等於「完整 VLM」。要看它所在目錄與 key：<br><br>• <code>Isaac-GR00T-VLM/artifacts/cosmos_r2_lora_6phase/checkpoint-2000/adapter_model.safetensors</code>：392 個 LoRA adapter tensor，key 如 <code>base_model.model.model.language_model.layers.0...lora_A/B.weight</code>，不是完整 VLM。<br>• <code>artifacts/checkpoints/gr00t/.../checkpoint-150000/model-00001-of-00003.safetensors</code> 等：GR00T VLA sharded checkpoint，含 <code>backbone.model.*</code> 與 <code>action_head.*</code>。<br>• merged Product A：<code>.../Cosmos-Reason2-2B-lora-merged-6phase/model.safetensors</code>，是完整 standalone VLM 權重。<br><br><code>merge_lora.py</code> 載入底座 + adapter，輸出新的 merged safetensors；<code>swap_backbone.py</code> 讀 VLA safetensors 與 merged VLM safetensors，只替換 VLA 中 <code>backbone.model.*</code> 且形狀相符的 tensor，再輸出新的 VLA safetensors。</td>
+</tr>
+<tr>
+<td>8</td>
+<td>「凍結 adapter/DiT 需要承受小幅 VL 特徵偏移」具體是什麼偏移？</td>
+<td>VLA action head 原本是用某個 backbone 特徵分佈訓練的：特徵張量形狀仍是 <code>[B, seq_len, 2048]</code>，但 swap 後，vision/embedding/LLM 前 16 層權重經 VQA LoRA 改過，會讓每個 token 的 hidden vector 數值分佈改變。例如：向量均值/方差、attention 後的 token 關係、物體/顏色/任務文字 token 的語意方向、不同層 feature scale 都可能小幅偏移。<br><br>由於 <code>action_head.vlln</code>、4 層 <code>vl_self_attention</code>、32 層 DiT、state/action encoders/decoder 都保持原權重，它們必須仍能把這批稍微改變的 VL features 映射到正確 action。若偏移小，open-loop action MSE/MAE 可能持平或改善；若偏移大，DiT 的 cross-attention 會讀到不同語意/尺度的條件特徵，動作誤差會上升。這就是 swap 後必須跑 VLA action eval 的原因。</td>
+</tr>
+</table>
+
+<div class="card">
+<h3>標準 HF SFT 流程與本專案對照</h3>
+<table>
+<tr><th>標準步驟</th><th>HF/PEFT 常用 API</th><th>本專案檔案</th><th>注意事項</th></tr>
+<tr><td>載入 processor</td><td><code>AutoProcessor.from_pretrained</code></td><td><code>train_vlm_lora.py</code></td><td>VLM 必須使用對應 chat template，影像要用 structured content 觸發 image token。</td></tr>
+<tr><td>載入 base model</td><td><code>Qwen3VLForConditionalGeneration.from_pretrained</code> 或 <code>AutoModelForImageTextToText</code></td><td><code>train_vlm_lora.py</code></td><td>Qwen3-VL 用專屬 class；其他 VLM 改成該架構可載入的 class。</td></tr>
+<tr><td>建立 LoRA config</td><td><code>LoraConfig</code></td><td><code>lora_args.py</code></td><td>本例 target 是 Qwen LLM projections；其他模型需檢查 module names。</td></tr>
+<tr><td>把 LoRA 掛到底座</td><td><code>get_peft_model(model, config)</code></td><td><code>train_vlm_lora.py</code></td><td>底座權重凍結，只更新 adapter 參數。</td></tr>
+<tr><td>準備 labels</td><td>labels + <code>-100</code> ignore mask</td><td><code>vqa_dataset.py</code></td><td>只對 assistant 答案 token 算 CausalLM loss。</td></tr>
+<tr><td>訓練</td><td><code>TrainingArguments</code> + <code>Trainer.train()</code></td><td><code>train_vlm_lora.py</code></td><td>Trainer 是外圈訓練迴圈；loss 由模型 forward 回傳。</td></tr>
+<tr><td>保存 adapter</td><td><code>model.save_pretrained</code></td><td><code>train_vlm_lora.py</code></td><td>checkpoint 內通常是 <code>adapter_model.safetensors</code>，不是完整底座。</td></tr>
+<tr><td>合併成 standalone</td><td><code>PeftModel.from_pretrained(...).merge_and_unload()</code></td><td><code>merge_lora.py</code></td><td>輸出 Product A，可單獨推論，也可作為 VLA swap 來源。</td></tr>
+</table>
+<p class="mut">官方參考：Hugging Face <a href="https://huggingface.co/docs/transformers/main/model_doc/qwen3_vl">Qwen3-VL model docs</a>、<a href="https://huggingface.co/docs/transformers/main/tasks/image_text_to_text">Image-text-to-text / VLM docs</a>、<a href="https://huggingface.co/docs/transformers/main/en/training">Transformers fine-tuning with Trainer</a>、<a href="https://huggingface.co/docs/transformers/main/peft">Transformers PEFT integration</a>、PEFT <a href="https://huggingface.co/docs/peft/main/en/tutorial/peft_model_config">LoRA / PeftModel tutorial</a> 與 <a href="https://huggingface.co/docs/peft/main/package_reference/peft_model#peft.PeftModel.merge_and_unload">merge_and_unload API</a>。</p>
+</div>
+
 <h2>1 · LLM 微調：方法總覽</h2>
 <table>
 <tr><th>方法</th><th>更新什麼</th><th>成本/顯存</th><th>適用</th></tr>
@@ -97,7 +210,7 @@
 <h2>3 · VQA 資料集的構成（你問的細節）</h2>
 <table>
 <tr><th>要素</th><th>說明</th><th>本專案</th></tr>
-<tr><td>影像來源</td><td>場景影格（相機/解析度）</td><td>OpenArm 單相機 480×640，從 mp4 抽首/中/尾幀</td></tr>
+<tr><td>影像來源</td><td>場景影格（相機/解析度）</td><td>OpenArm 單相機 480×640，從 mp4 依 6 個操作階段抽樣（approach / grasp / pick / move_to_plate / place / retract）</td></tr>
 <tr><td>問答格式</td><td>單輪 image+Q→A / 多輪；中/英</td><td>單輪、英文、JSONL（<code>images / type / messages</code>）</td></tr>
 <tr><td>題型分佈</td><td>對齊評測類別</td><td>7 類：Attribute/Mechanics/Reasoning/Spatial/Summary/Temporal/Trajectory</td></tr>
 <tr><td>規模</td><td>問答對數</td><td>依 episode 數而定；每集 6 幀（6 動作階段 × 1 幀）</td></tr>
@@ -147,15 +260,23 @@
 <p><span style="color:var(--acc);font-weight:600">若缺 Summary / Temporal / Trajectory 會怎樣？</span> 這三類分別測「場景整體理解 / 時間順序 / 動作路徑」。若缺：VQA 會偏向靜態屬性(顏色/位置)，<b>無法評估時序與全局推理</b>；而對 VLA 來說，時序與軌跡理解正是與 action 最相關的維度，缺了會低估 VLM 對操作任務的幫助。本專案 7 類齊全即為涵蓋這些面向。</p>
 </div>
 
-<h2>5 · 案例分析</h2>
-<div class="grid g2">
-<div class="card"><h3>案例 A — VLM：本專案（Cosmos-R2 VQA LoRA）</h3>
-<p class="mut">影像+問答多模態；凍結 vision、LoRA 調 LLM；label-mask 只對答案算 loss；指標：VQA 準確率（按題型）+ 置換進 VLA 後的 action MSE/MAE。完整數字見專案報告 §6。</p></div>
-<div class="card"><h3>案例 B — 純 LLM LoRA（對照）</h3>
-<p class="mut">純文字指令微調（如客服/領域問答）：無 vision/projector、無 image token；資料是純文字對話；指標多為文字準確率/BLEU/人評。相同點：凍結底座、低秩 A·B、label-mask 答案、bf16+grad-ckpt。相異點：VLM 多了視覺編碼、image-token 對齊與更長序列/顯存壓力。</p></div>
+<h2>5 · 本專案腳本逐一說明（fine-tune / eval pipeline）</h2>
+<div class="card">
+<h3>train_vlm_lora.py 的 SFT 資料流（含對應 API）</h3>
+<svg viewBox="0 0 920 188" width="100%">
+ <defs><marker id="sf" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4cc2ff"/></marker>
+ <style>.b{fill:#1f2832;stroke:#2b3947}.lo{fill:#13261a;stroke:#7ee787}.t{fill:#e6edf3;font:600 12px 'Segoe UI'}.s{fill:#9fb0c0;font:10.5px 'Segoe UI'}.api{fill:#ffa657;font:10px 'Segoe UI'}
+ .fl{stroke:#4cc2ff;stroke-width:2.5;fill:none;stroke-dasharray:6 10;animation:sfd 1s linear infinite;marker-end:url(#sf)}@keyframes sfd{to{stroke-dashoffset:-32}}</style></defs>
+ <rect class="b" x="6" y="40" width="150" height="74" rx="9"/><text class="t" x="18" y="64">VQA JSONL</text><text class="s" x="18" y="82">data.train.jsonl</text><text class="s" x="18" y="100">images/ + &lt;image&gt;</text>
+ <rect class="b" x="192" y="40" width="166" height="74" rx="9"/><text class="t" x="204" y="64">Dataset + Collator</text><text class="s" x="204" y="82">label-mask 只算答案</text><text class="api" x="204" y="102">apply_chat_template · -100</text>
+ <rect class="lo" x="394" y="40" width="168" height="74" rx="9"/><text class="t" x="406" y="64">Cosmos-R2 + LoRA</text><text class="s" x="406" y="82">凍結底座 · 只訓 A·B</text><text class="api" x="406" y="102">get_peft_model(LoraConfig)</text>
+ <rect class="b" x="598" y="40" width="166" height="74" rx="9"/><text class="t" x="610" y="64">Trainer.train()</text><text class="s" x="610" y="82">→ CausalLM loss</text><text class="api" x="610" y="102">Trainer · TrainingArguments</text>
+ <rect class="lo" x="800" y="40" width="114" height="74" rx="9"/><text class="t" x="812" y="64">save → adapter</text><text class="s" x="812" y="82">→ merge → A</text><text class="api" x="812" y="102">save_pretrained</text>
+ <path class="fl" d="M156,77 L192,77"/><path class="fl" d="M358,77 L394,77"/><path class="fl" d="M562,77 L598,77"/><path class="fl" d="M764,77 L800,77"/>
+ <text class="s" x="6" y="140">底座 <tspan fill="#e6edf3">Qwen3VLForConditionalGeneration.from_pretrained(nvidia/Cosmos-Reason2-2B)</tspan>；只有綠框（LoRA A·B、存檔）被訓練／輸出，底座權重凍結。</text>
+ <text class="s" x="6" y="160">loss 由 model 內部以 <tspan fill="#e6edf3">labels</tspan> 算（CausalLM 交叉熵），label-mask 後只對 assistant 答案 token 計入；<tspan fill="#e6edf3">Trainer</tspan> 只負責外圈訓練迴圈（batching / optimizer / 存檔）。</text>
+</svg>
 </div>
-
-<h2>6 · 本專案腳本逐一說明（fine-tune / eval pipeline）</h2>
 <table>
 <tr><th>腳本</th><th>作用</th><th>關鍵 API</th></tr>
 <tr>
@@ -213,6 +334,29 @@
 <b>train_vlm_lora.py 是 transformers 標準 SFT 流程嗎？與 GR00T N1.7 訓練有何不同？</b><br>
 <code>train_vlm_lora.py</code> 是 transformers 標準 SFT 流程（<code>AutoProcessor</code> + <code>Qwen3VLForConditionalGeneration</code> + <code>peft.get_peft_model</code> + <code>Trainer</code> / <code>TrainingArguments</code>），但<b>綁定 Qwen3-VL 類別與其 proj 名稱</b>；換 VLM 家族需改 <code>AutoModelForImageTextToText</code> 子類與 LoRA target 模組名稱。<br><br>
 與 GR00T N1.7 訓練<b>本質不同</b>——後者使用 GR00T 自家 trainer，訓練對象是整個 VLA（backbone + action adapter + DiT），loss 為 flow-matching action loss，非 HF <code>Trainer</code>、非 CausalLM token loss。本流程只訓練 VLM 的語言理解能力（VQA），action head 完全獨立，最終透過 <code>swap_backbone.py</code> 以 safetensors 鍵值置換的方式注入 VLA。
+</div>
+<div class="card">
+<h3>你問的幾個概念（CausalLM loss / HF Trainer / 26 維）</h3>
+<table>
+<tr><th>問題</th><th>說明</th></tr>
+<tr><td>什麼是 <b>CausalLM loss</b>？和 <b>HF Trainer</b> 有何不同？</td>
+<td>兩者是<b>不同層次</b>、非替代關係：<br>
+• <b>CausalLM loss</b> = 自回歸語言模型「預測下一個 token」的<b>交叉熵</b>（next-token cross-entropy），是<b>訓練目標(loss)</b>。把 <code>labels</code> 傳進 <code>Qwen3VLForConditionalGeneration</code> 時模型內部就算它；本專案再加 label-mask，只對 assistant 答案 token 計入（prompt／影像 token 設 <code>-100</code> 略過）。<br>
+• <b>HF <code>Trainer</code></b> = 訓練的<b>流程引擎(loop)</b>：負責 batching、grad-accum、optimizer step、lr schedule、logging、存檔、分散式等，<b>不決定 loss</b>（loss 由 model 回傳）。<br>
+所以「用 HF Trainer」與「用 CausalLM loss」是<b>正交</b>的：Trainer 是外圈迴圈，CausalLM loss 是裡面的目標函數。</td></tr>
+<tr><td>GR00T 若也微調 backbone，訓練方式也不同嗎？</td>
+<td><b>仍然不同。</b>即使 GR00T 解凍 backbone（<code>tune_llm=True</code> / <code>tune_top_llm_layers&gt;0</code> / 對 backbone 掛 LoRA），它<b>不是用 CausalLM／VQA loss、也不是用 HF Trainer</b>。backbone 的梯度是從 <b>flow-matching action loss</b> 經 DiT／adapter <b>反傳</b>回來——目的是讓 backbone 產生「更利於預測動作的特徵」，<u>而非</u>更會生成文字。差異不只在「動不動 backbone」，而在<b>目標函數與訓練迴圈本身</b>：GR00T＝自家 trainer＋flow-matching action loss；本流程＝HF Trainer＋CausalLM 文字 loss。</td></tr>
+<tr><td>為什麼 flow-matching action loss 是 <b>26 維</b>，不是 32？</td>
+<td>26 是 <b>OpenArm O6 這個 embodiment 的真實動作維度</b>：雙臂各 7-DoF（14）＋雙靈巧手各 6-DoF（12）＝ <b>26</b>（見 dataset 的 <code>action.shape=[26]</code>、<code>observation.state.shape=[26]</code>）。模型為支援多體系，把動作補零到 <code>max_action_dim=132</code> 的統一槽位，並以 <code>action_mask</code> 只對真實 26 維算 loss。<b>32 不是動作維度</b>——那是別處的數字（DiT 的 attention heads＝32、<code>max_num_embodiments</code>＝32）。「26 維」＝真實自由度、「32」＝注意力頭／體系數，兩者無關。</td></tr>
+</table>
+</div>
+
+<h2>6 · 案例分析</h2>
+<div class="grid g2">
+<div class="card"><h3>案例 A — VLM：本專案（Cosmos-R2 VQA LoRA）</h3>
+<p class="mut">影像+問答多模態；凍結 vision、LoRA 調 LLM；label-mask 只對答案算 loss；指標：VQA 準確率（按題型）+ 置換進 VLA 後的 action MSE/MAE。完整數字見專案報告 §5/§6。</p></div>
+<div class="card"><h3>案例 B — 純 LLM LoRA（對照）</h3>
+<p class="mut">純文字指令微調（如客服/領域問答）：無 vision/projector、無 image token；資料是純文字對話；指標多為文字準確率/BLEU/人評。相同點：凍結底座、低秩 A·B、label-mask 答案、bf16+grad-ckpt。相異點：VLM 多了視覺編碼、image-token 對齊與更長序列/顯存壓力。</p></div>
 </div>
 
 <p class="mut" style="margin-top:30px;border-top:1px solid var(--line);padding-top:12px">搭配閱讀：<code>docs/project_report.html</code>（本專案的結果與三方產物）。</p>

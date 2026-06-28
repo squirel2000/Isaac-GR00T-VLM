@@ -153,6 +153,42 @@
 </svg>
 </div>
 <div class="card">
+<h3>VLA 內層架構（層數／維度／歸屬：哪些屬 VLM backbone、哪些屬 action head）</h3>
+<svg viewBox="0 0 980 410" width="100%" class="flow">
+ <defs><marker id="arA" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4cc2ff"/></marker>
+ <marker id="arO" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#ffa657"/></marker>
+ <style>.nA{fill:#1f2832;stroke:#2b3947}.eA{stroke:#2b3947;stroke-width:1.6;fill:none;marker-end:url(#arA)}</style></defs>
+
+ <rect class="nA" x="8" y="8" width="372" height="46" rx="9" style="stroke:#9fb0c0"/>
+ <text class="nt" x="20" y="30">影像 + 語言（模型輸入）</text><text class="ns" x="20" y="47">image + text tokens — 不屬 VLM backbone</text>
+ <path class="eA" d="M118,54 C118,92 104,108 104,126"/><text class="ns" x="60" y="86">影像</text>
+ <path class="eA" d="M260,54 C260,96 380,110 410,126"/><text class="ns" x="300" y="92">語言</text>
+
+ <rect x="8" y="66" width="964" height="154" rx="12" fill="none" style="stroke:#4cc2ff;stroke-dasharray:5 5"/>
+ <text class="nt" x="20" y="88" style="fill:#4cc2ff">VLM backbone ＝ Cosmos-Reason2-2B (Qwen3-VL)　~2.14B　bf16 ≈ 4–5 GB　＝ backbone.model.*（swap 置換對象）</text>
+ <text class="ns" x="20" y="106">tune_llm / tune_visual = False（凍結）；swap 用 LoRA-merged 覆蓋，merged 多出的 17–27 層自動略過</text>
+ <rect class="nA" x="24" y="126" width="214" height="48" rx="9"/><text class="nt" x="36" y="148">Vision encoder · ViT 24 層</text><text class="ns" x="36" y="166">影像 → patch embeds</text>
+ <rect class="nA" x="270" y="126" width="384" height="48" rx="9"/><text class="nt" x="282" y="148">Qwen3 LLM decoder · 28 → 16 層</text><text class="ns" x="282" y="166">select_layer=16 · hidden 2048（文字＋影像 token 交錯）</text>
+ <rect class="nA" x="700" y="126" width="252" height="48" rx="9" style="stroke:#7ee787"/><text class="nt" x="712" y="148">VL features</text><text class="ns" x="712" y="166">hidden 2048（最後層 hidden_states）</text>
+ <path class="eA" d="M238,150 L270,150"/><path class="eA" d="M654,150 L700,150"/>
+
+ <path d="M826,174 L826,232 L104,232 L104,278" style="stroke:#ffa657;stroke-width:1.8;fill:none;stroke-dasharray:6 5" marker-end="url(#arO)"/>
+ <text class="ns" x="338" y="227" style="fill:#ffa657">swap 邊界 ── 以下全屬 VLA action head（swap 時不換）</text>
+
+ <rect x="8" y="242" width="964" height="162" rx="12" fill="none" style="stroke:#ffa657;stroke-dasharray:5 5"/>
+ <text class="nt" x="20" y="263" style="fill:#ffa657">VLA action head ── 保留不動 (action_head.*)</text>
+ <rect class="nA" x="24" y="278" width="160" height="48" rx="9"/><text class="nt" x="36" y="300">vlln</text><text class="ns" x="36" y="318">LayerNorm(2048)</text>
+ <rect class="nA" x="210" y="278" width="220" height="48" rx="9" style="stroke:#d2a8ff"/><text class="nt" x="222" y="300">VL self-attn adapter</text><text class="ns" x="222" y="318">4 層 · 32 heads×64 = 2048</text>
+ <rect class="nA" x="456" y="278" width="300" height="48" rx="9"/><text class="nt" x="468" y="300">DiT / AlternateVLDiT · 32 層</text><text class="ns" x="468" y="318">cross-attn → VL(2048) · inner 1536</text>
+ <rect class="nA" x="782" y="270" width="178" height="64" rx="9" style="stroke:#7ee787"/><text class="nt" x="794" y="292">action decoder</text><text class="ns" x="794" y="310">26 維 → pad 132</text><text class="ns" x="794" y="327">flow-matching · h40</text>
+ <rect class="nA" x="456" y="344" width="300" height="34" rx="9"/><text class="nt" x="468" y="365">state + noised action → encoders</text>
+ <path class="eA" d="M184,302 L210,302"/><path class="eA" d="M430,302 L456,302"/><path class="eA" d="M756,302 L782,302"/>
+ <path class="eA" d="M606,344 L606,326"/>
+</svg>
+<p class="note"><b>回答你的問題：</b>① <b>「VLA 只吃 layer 0–15」指 backbone 內 Qwen3 LLM 那一疊（28 層裁到前 16 層）</b>，<u>不是</u> DiT 的 32 層——這是<b>兩個獨立堆疊</b>：LLM 在 VLM backbone 內、DiT 在 action head 內，層數互不相干。② <b>vlln</b> ＝ VL features 的 <code>LayerNorm(2048)</code>，把 backbone 輸出先正規化再進 adapter/DiT，屬 <code>action_head</code>。③ <b>「影像 + 語言」是模型輸入、不屬於 VLM backbone</b>——它們要經 vision encoder／LLM 才產生 VL features，圖中已移到 backbone 框外。</p>
+<p class="mut"><b>數字校正：</b>Cosmos-Reason2-2B 的 LLM 實際為 <b>28 層</b>（§1/§2 早期標示的「36 層」為筆誤）；部署 checkpoint 裁剪到 <b>select_layer=16</b>（程式 dataclass 預設 12，但本機所有 <code>N1_7_fft_*</code> 皆 16）。歸屬一覽：<b>VLM backbone</b>＝vision(24L)+LLM(28→16L)、hidden 2048；<b>VLA action head</b>＝vlln + 4 層 adapter(vl_self_attention) + 32 層 DiT(inner 1536, cross-attn 維度 2048) + state/action 編碼器 + action decoder（OpenArm 動作 26 維、pad 132、horizon 40）。swap 只覆蓋 <code>backbone.model.*</code>（493 keys），其餘 <code>action_head.*</code> 全部保留。</p>
+</div>
+<div class="card">
 <h3>每步的目的</h3>
 <table>
 <tr><th>步驟</th><th>目的 / 作用</th></tr>
@@ -160,7 +196,7 @@
 <tr><td>2. 載入 Cosmos-R2（完整）</td><td>取得與 VLA backbone 同源的 VLM；獨立訓練不污染 VLA</td></tr>
 <tr><td>3. LoRA SFT</td><td>凍結原權重、只學低秩旁路 → 省顯存、避免災難性遺忘、產出可合併權重</td></tr>
 <tr><td>4. merge_and_unload</td><td>把 LoRA 併回主權重 → 得到形狀與原模型相同的 standalone VLM（產物 A）</td></tr>
-<tr><td>5. swap_backbone</td><td>用產物 A 覆蓋 VLA 的 <code>backbone.model.*</code>（交集 493 keys、尊重 12 層裁剪），保留 action head → 產物 B</td></tr>
+<tr><td>5. swap_backbone</td><td>用產物 A 覆蓋 VLA 的 <code>backbone.model.*</code>（交集 493 keys、尊重 16 層裁剪），保留 action head → 產物 B</td></tr>
 </table>
 <h3>LoRA 數學（English）</h3>
 <div class="formula">h = W·x + (α / r) · B · A · x &nbsp;&nbsp; with A ∈ ℝ^{r×d}, B ∈ ℝ^{d×r}, r = 16, α = 32 (frozen W)</div>
@@ -186,6 +222,7 @@
 <div class="card">
 <h3>DIY：用你自己的影像跑 VQA → 微調 → 驗證 → 整合回 GR00T</h3>
 <p class="mut">指令都在 <code>Isaac-GR00T-VLM/</code> 下；設定集中於 <code>configs/default.yaml</code>。「換自己的影像」= 換 step 1 的 <code>--dataset-path</code>（LeRobot 格式）或直接提供你的 VQA JSONL。</p>
+<p class="note"><b>4090（24 GB）也適用，流程完全相同</b>，只有兩點要改：① teacher 換成 dense 的 <code>Qwen/Qwen3-VL-8B-Instruct</code>（30B-A3B MoE 需 ~62 GB、塞不進 24 GB）；② 路徑改本機（資料集 <code>/home/asus/Gits/IsaacLab-GR00T/datasets</code>、產物 <code>artifacts/checkpoints/gr00t/</code>）。LoRA r=16／batch 1×accum 8／bf16＋grad-ckpt 在 24 GB 綽綽有餘（實測訓練僅佔 ~6 GB）。完整 4090 實跑紀錄：<code>docs/plans/2026-06-23-vqa-6phase-qwen3vl8b-4090.md</code>。</p>
 <div class="formula">
 # 0) env (H100)<br>
 cd /data/VLA/tingying/Isaac-GR00T-VLM &amp;&amp; uv sync --extra dev<br><br>
@@ -245,6 +282,7 @@ uv run python -m vlm_lora.eval_vlm_vqa --model-dir &lt;A&gt; --val-jsonl artifac
 <tr style="font-weight:700"><td>Overall</td><td>35.3% (88/249)</td><td style="color:var(--acc2)">93.2% (232/249)</td><td style="color:var(--acc2)">+57.8</td></tr>
 </table>
 <p class="mut">注意：val 與 train 同分佈（in-distribution），數字偏高；真實泛化需獨立場景測試集。</p>
+<p class="mut"><b>4090／Qwen3-VL-8B 重跑（6 階段抽幀、1080 題 val）：</b>base <b>20.7%</b> → LoRA <b>90.1%</b>（+69.4）。逐型：Attribute 66→91、Mechanics 0→94、Reasoning 0→72、Spatial 21→91、Summary 0→89、Temporal 16→100、Trajectory 52→94。<b>注意</b>：本表（H100、30B-A3B teacher、249 題）與 4090（8B teacher、1080 題）是<u>不同 teacher、不同 val 集</u>，準確率<b>不可直接相比</b>——各自衡量「模型答案是否貼近自己 teacher 的風格」。</p>
 <h3>5b · VLA open-loop action（baseline vs swapped · traj 0）</h3>
 <table>
 <tr><th>VLA checkpoint</th><th>MSE ↓</th><th>MAE ↓</th></tr>
@@ -252,23 +290,40 @@ uv run python -m vlm_lora.eval_vlm_vqa --model-dir &lt;A&gt; --val-jsonl artifac
 <tr><td>swapped（LoRA-tuned Cosmos-R2）</td><td>5.18e-4</td><td>8.81e-3</td></tr>
 </table>
 <p class="note"><b>結論</b>：VLM VQA +57.8%，但 swapped 的 action 略差（MSE 1.81e-4→5.18e-4）——置換後 action head 未針對新 VLM 特徵重訓 → 「VLM 理解提升 ≠ action 提升」。未來可 swap 後輕量再訓 action head。</p>
+<h3 style="margin-top:14px">5b-2 · VLA 閉環 sim 成功率（4090／8B 重跑：baseline vs swapped）</h3>
+<table>
+<tr><th>VLA checkpoint</th><th>成功率 ↑</th><th>timeout</th><th>unsafe</th></tr>
+<tr><td>baseline N1_7_fft_0614（100 集）</td><td>89%</td><td>9</td><td>2</td></tr>
+<tr><td>swapped（6 階段 8B LoRA，30 集）</td><td style="color:var(--acc3)">73%</td><td>3</td><td>5</td></tr>
+</table>
+<p class="note"><b>「為什麼之前用 30B-A3B 看起來比較好、action 影響也比較小？」</b><br>
+① <b>指標不同、不可直接比</b>：上面 5b 是 <b>open-loop MSE/MAE</b>（單一軌跡逐步預測誤差），這裡是 <b>closed-loop sim 成功率</b>（整集 rollout、誤差會累積、環境會回饋）；closed-loop 本來就比 open-loop 嚴苛、波動也大（swapped 僅 30 集、信賴區間寬）。<br>
+② <b>teacher 品質會傳導到 action</b>：30B-A3B 產生的 VQA 標註更多樣、更準，LoRA 學到的 grounding 較「溫和」、對 backbone 特徵擾動小 → 凍結的 adapter/DiT 較能容忍 → action 退化小。8B（dense）＋本次較重的 template 比重 → 監督較窄／較死板 → 特徵位移大 → action 掉得多。<br>
+③ <b>方向一致</b>：兩次都是「VLM 理解大幅提升、swapped action 略退」；改善法相同——swap 後對 action head 輕量再訓，或用更強 teacher ＋更小 LoRA r 以降低特徵位移。</p>
 </div>
 
-<h2 id="case">5c · 案例分析（實際圖像 + VQA + 路徑，可自行驗證）</h2>
+<h2 id="case">5c · 案例分析：7 類題型如何依「6 動作階段」切分（實際截圖）</h2>
 <div class="card">
-<p class="mut">來源：episode 795 的 early / mid / late 三幀（同一集，動作前/中/後）。圖檔複本在 <code>docs/assets/</code>；H100 原始在 <code>Isaac-GR00T-VLM/artifacts/vqa/images/</code>；對應 VQA 在 <code>artifacts/vqa/data.jsonl</code>。</p>
+<p class="mut"><b>怎麼切 section / segment？</b>每個 episode（此資料集 450 幀）依<b>固定比例</b>抽 6 個代表幀，對應 6 個動作階段——這是<b>啟發式定點抽樣</b>（假設每集都照 approach → grasp → pick → move_to_plate → place → retract 的時序），<u>非</u>逐幀動作偵測。比例 ×(length−1) 取整即幀號。來源：episode 795（圖檔在 <code>docs/assets/</code>，原始在 <code>artifacts/vqa_6phase/images/</code>）。</p>
 <div class="grid g3">
-  <div><img src="assets/ep000795_f000000.png" style="width:100%;border-radius:8px" alt="early frame"><small>f000000 (early)</small></div>
-  <div><img src="assets/ep000795_f000224.png" style="width:100%;border-radius:8px" alt="mid frame"><small>f000224 (mid)</small></div>
-  <div><img src="assets/ep000795_f000449.png" style="width:100%;border-radius:8px" alt="late frame"><small>f000449 (late)</small></div>
+  <div><img src="assets/ep000795_f000053_approach.png" style="width:100%;border-radius:8px" alt="approach"><small>approach · 0.12 · f53</small></div>
+  <div><img src="assets/ep000795_f000134_grasp.png" style="width:100%;border-radius:8px" alt="grasp"><small>grasp · 0.30 · f134</small></div>
+  <div><img src="assets/ep000795_f000202_pick.png" style="width:100%;border-radius:8px" alt="pick"><small>pick · 0.45 · f202</small></div>
+  <div><img src="assets/ep000795_f000278_move_to_plate.png" style="width:100%;border-radius:8px" alt="move_to_plate"><small>move_to_plate · 0.62 · f278</small></div>
+  <div><img src="assets/ep000795_f000359_place.png" style="width:100%;border-radius:8px" alt="place"><small>place · 0.80 · f359</small></div>
+  <div><img src="assets/ep000795_f000431_retract.png" style="width:100%;border-radius:8px" alt="retract"><small>retract · 0.96 · f431</small></div>
 </div>
+<p class="mut" style="margin-top:10px"><b>每個階段幀都生成 7 類題型</b>：template（規則）依「目前階段」給出與階段相關的答案，teacher（Qwen3-VL-8B）再補多樣性。同一張影像、不同題型問不同面向：</p>
 <table>
-<tr><th>frame</th><th>type (source)</th><th>question → answer</th></tr>
-<tr><td>early</td><td>Temporal (template)</td><td>Has the can already been placed? → No, the robot is still moving the can</td></tr>
-<tr><td>late</td><td>Temporal (template)</td><td>Has the can already been placed? → Yes, the can has been placed</td></tr>
-<tr><td>mid</td><td>Attribute (teacher)</td><td>What color is the can? → Green</td></tr>
-<tr><td>any</td><td>Trajectory (template)</td><td>On which plate will the can be placed? → On the orange plate</td></tr>
+<tr><th>階段 (幀)</th><th>該階段的代表題型 → 問答</th></tr>
+<tr><td>approach (f53)</td><td><b>Temporal</b> 哪個階段？→ approach；<b>Mechanics</b> 手抓著罐子嗎？→ 還沒；<b>Reasoning</b> 下一步？→ 伸向罐子準備抓取</td></tr>
+<tr><td>grasp (f134)</td><td><b>Mechanics</b> 手抓著嗎？→ 是，正抓住；<b>Spatial</b> 罐子相對盤子？→ 在前方、離盤子還遠</td></tr>
+<tr><td>pick (f202)</td><td><b>Reasoning</b> 下一步？→ 把罐子提起；<b>Spatial</b> → 正搬向盤子</td></tr>
+<tr><td>move_to_plate (f278)</td><td><b>Reasoning</b> 下一步？→ 把罐子搬向 {color} 盤；<b>Temporal</b> 放好了嗎？→ 還沒</td></tr>
+<tr><td>place (f359)</td><td><b>Temporal</b> 放好了嗎？→ 是；<b>Mechanics</b> 還抓著嗎？→ 已放開</td></tr>
+<tr><td>retract (f431)</td><td><b>Reasoning</b> 下一步？→ 收回手臂回 home；＋每幀皆問的 <b>Summary / Attribute / Trajectory</b>（在做什麼／盤子顏色／放哪盤）</td></tr>
 </table>
+<p class="mut"><b>7 類分配規則</b>：Summary／Trajectory／Attribute「全程不變」（每幀都問、答案由任務字串解析）；Temporal／Mechanics／Reasoning／Spatial「隨階段變」（答案依目前 phase 推導）。template 保證 7 類齊全、teacher 增廣。<b>限制</b>：固定比例假設每集時序一致；某集動作偏快／慢時 phase 標註會略偏（已知近似）。對應程式：<code>_PHASE_FRACS</code> 與 <code>template_qa_pairs()</code>（<code>gen_vqa_from_lerobot.py</code>）。</p>
 <h3 style="margin-top:14px">Open-loop 軌跡圖（GT vs predicted action，逐維度）</h3>
 <div class="grid g2">
   <div><img src="assets/baseline_traj0.jpeg" style="width:100%;border-radius:8px" alt="baseline trajectory"><small>baseline · MSE 1.81e-4</small></div>
